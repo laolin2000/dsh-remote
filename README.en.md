@@ -50,6 +50,43 @@ phone / tablet / another computer
 **Key design point**: the guard sits **outermost** and neither DSH nor any middle layer knows it's there —
 so it works in front of any DSH version and any local reverse proxy.
 
+## Install from scratch (using nothing but this repo)
+
+Prerequisites: **Node ≥ 20**; DSH installed and **started at least once** (so the profile directory
+`~/.dsh/profiles/web-desktop` exists).
+
+```bash
+# 1) get the code (github.com is often unreachable directly from CN: use a proxy or the ZIP download)
+git clone https://github.com/laolin2000/dsh-remote.git
+#   measured here: direct github.com:443 times out; with a proxy it works
+#   git -c http.proxy=http://127.0.0.1:7897 clone https://github.com/laolin2000/dsh-remote.git
+
+# 2) install the DSH UI plugin (copies the package, appends the mount entry, updates the name list, backs up first)
+cd dsh-remote
+node bin/install-plugin.mjs            # add --dry-run to see the plan first
+
+# 3) restart DSH (the plugin tree is not hot-reloaded) -> the "手机链接" button appears,
+#    bottom-right, directly above the EAC monitor button
+
+# 4) start the guard (the authentication layer for phone access; a long-running process)
+node guard/guard.mjs serve             # defaults: 127.0.0.1:8443 -> upstream 127.0.0.1:3081
+#   no local middle layer? point the upstream at DSH's own port (overrides are persisted to guard.json):
+node guard/guard.mjs serve --upstream http://127.0.0.1:50142
+
+# 5) get the phone link and a QR code (long-lived; only --reset rotates it)
+node guard/guard.mjs pair --qr
+
+# 6) open the public entry (needs cloudflared; pass its path if it is not on PATH)
+node guard/guard.mjs tunnel up --cloudflared "D:/path/to/cloudflared.exe"
+#   once you have https://xxxx.trycloudflare.com, open the token link on your phone (or scan the QR)
+```
+
+CLI overrides (all persisted to `guard.json`): `--upstream <url>`, `--port <n>`, `--bind <addr>`,
+`--cloudflared <path>`, `--url-file <path>`, `--tunnel-log <path>`, `--inject-panel 0|1`, `--supervise 0|1`.
+
+> For auto-start at boot see [`docs/deploy/`](docs/deploy/) (Windows Scheduled Task / macOS launchd / Linux
+> systemd --user). To remove the plugin: `node bin/install-plugin.mjs --uninstall`.
+
 ## Quick start
 
 ```bash

@@ -46,6 +46,41 @@
 
 **关键设计**：守卫是**最外层**，DSH 与中间层完全不知情——所以任何 DSH 版本、任何本地反代都能直接放在它后面。
 
+## 从零安装（只靠这个仓库）
+
+前置：**Node ≥ 20**；DSH 装好并**至少启动过一次**（profile 目录 `~/.dsh/profiles/web-desktop` 存在）。
+
+```bash
+# 1) 取代码（国内直连 github.com 常不通：走代理或下 ZIP 都行）
+git clone https://github.com/laolin2000/dsh-remote.git
+#   实测：本机直连 github.com:443 超时，加代理即可
+#   git -c http.proxy=http://127.0.0.1:7897 clone https://github.com/laolin2000/dsh-remote.git
+
+# 2) 装 DSH 界面插件（拷包 + 追加挂载段 + 更新插件名清单，改前自动备份）
+cd dsh-remote
+node bin/install-plugin.mjs            # 想先看计划：--dry-run
+
+# 3) 重启 DSH（插件树不热重载）→ 右下角、EAC监控按钮上方出现「手机链接」
+
+# 4) 启动守卫（手机访问的鉴权层；常驻进程）
+node guard/guard.mjs serve             # 默认 127.0.0.1:8443 → 上游 127.0.0.1:3081
+#   只用 DSH、没有中间层时，把上游指到 DSH 自己的端口（覆盖项会写进 guard.json）：
+node guard/guard.mjs serve --upstream http://127.0.0.1:50142
+
+# 5) 拿手机链接与二维码（长期有效，只有 --reset 才换）
+node guard/guard.mjs pair --qr
+
+# 6) 开公网入口（需要 cloudflared；没在 PATH 里就用 --cloudflared 指路径）
+node guard/guard.mjs tunnel up --cloudflared "D:/path/to/cloudflared.exe"
+#   拿到 https://xxxx.trycloudflare.com 后，手机打开带 token 的那条链接（或扫二维码）
+```
+
+命令行覆盖项（都会持久化进 `guard.json`）：`--upstream <url>`、`--port <n>`、`--bind <addr>`、
+`--cloudflared <路径>`、`--url-file <路径>`、`--tunnel-log <路径>`、`--inject-panel 0|1`、`--supervise 0|1`。
+
+> 想开机自启：见 [`docs/deploy/`](docs/deploy/)（Windows 计划任务 / macOS launchd / Linux systemd --user）。
+> 卸载（只删自己装的）：`node bin/install-plugin.mjs --uninstall`。
+
 ## 快速开始
 
 ```bash

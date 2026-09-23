@@ -387,6 +387,38 @@ console.log("\n=== 13. 审计日志 ===");
 }
 
 // ---------------------------------------------------------------- 收尾
+console.log("\n=== 15. 命令行覆盖项（从零安装时用得上）===");
+{
+	// 用独立的临时目录：不能动上面那个正在跑的守卫的配置
+	const T2 = fs.mkdtempSync(path.join(os.tmpdir(), "guard-cli-"));
+	fs.writeFileSync(path.join(T2, "guard.json"), "{}", "utf8");
+	const env2 = { ...process.env, DSH_REMOTE_DIR: T2, DSH_HOME: T2 };
+	const cli2 = (args) => new Promise((resolve) => {
+		const p = spawn(process.execPath, [GUARD, ...args], { env: env2, stdio: ["ignore", "pipe", "pipe"] });
+		let out = ""; p.stdout.on("data", (c) => out += String(c)); p.stderr.on("data", (c) => out += String(c));
+		p.on("close", (code) => resolve({ code, out }));
+	});
+	const cfg2 = () => JSON.parse(fs.readFileSync(path.join(T2, "guard.json"), "utf8"));
+
+	const r1 = await cli2(["print", "--upstream", "http://127.0.0.1:50142", "--port", "9443", "--bind", "0.0.0.0"]);
+	check("--upstream/--port/--bind 会写进 guard.json", cfg2().upstream === "http://127.0.0.1:50142" && cfg2().port === 9443 && cfg2().bind === "0.0.0.0", JSON.stringify({ upstream: cfg2().upstream, port: cfg2().port, bind: cfg2().bind }));
+	check("--print 同时反映覆盖后的值", /"upstream": "http:\/\/127\.0\.0\.1:50142"/.test(r1.out));
+
+	const cf = path.join(T2, "某个目录", "cloudflared.exe");
+	await cli2(["print", "--cloudflared", cf]);
+	check("--cloudflared 会写进 guard.json（解析成绝对路径）", path.isAbsolute(cfg2().cloudflared) && cfg2().cloudflared.endsWith("cloudflared.exe"), cfg2().cloudflared);
+
+	await cli2(["print", "--inject-panel", "0", "--supervise", "0"]);
+	check("--inject-panel 0 关掉页面注入", cfg2().injectPanel === false);
+	check("--supervise 0 关掉隧道守护", cfg2().superviseTunnel === false);
+
+	const r2 = await cli2(["tunnel", "up", "--cloudflared", path.join(T2, "根本没有.exe")]);
+	check("找不到 cloudflared 时给出**存在**的做法（含 --cloudflared 与拷进目录两条）",
+		/--cloudflared/.test(r2.out) && /PASS|PATH|放进/.test(r2.out) && r2.code === 1, r2.out.slice(0, 160));
+
+	fs.rmSync(T2, { recursive: true, force: true });
+}
+
 guard.kill();
 upstream.close();
 await new Promise((r) => setTimeout(r, 300));

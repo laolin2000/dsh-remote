@@ -146,6 +146,37 @@ conf.devices ??= [];
 conf.pairings ??= [];
 conf.sessions ??= [];
 
+/** 命令行覆盖项：写进 guard.json 并立即生效。
+ *  为什么需要：从零安装的人不一定把 cloudflared 放进 PATH，也不一定有中间层
+ *  （默认 upstream 指向 127.0.0.1:3081；只用 DSH 的人应该指到 DSH 自己的端口）。
+ *  （踩过的坑：找不到 cloudflared 的提示里写了 --cloudflared，但那个参数当时并不存在。） */
+function applyCliOverrides() {
+	const map = [
+		["cloudflared", (v) => path.resolve(v)],
+		["upstream", (v) => v],
+		["port", (v) => Number(v)],
+		["bind", (v) => v],
+		["url-file", (v) => path.resolve(v), "urlFile"],
+		["tunnel-log", (v) => path.resolve(v), "tunnelLog"],
+		["cookie-name", (v) => v, "cookieName"],
+		["inject-panel", (v) => !(v === "0" || v === "false" || v === "no"), "injectPanel"],
+		["supervise", (v) => !(v === "0" || v === "false" || v === "no"), "superviseTunnel"]
+	];
+	const applied = [];
+	for (const [name, cast, key] of map) {
+		const v = flag(name);
+		if (v === "") continue;
+		const target = key || name;
+		conf[target] = cast(v);
+		applied.push(`${target}=${conf[target]}`);
+	}
+	if (applied.length) {
+		saveConf();
+		if (cmd === "serve") log(`命令行覆盖已写入 ${CONF_FILE}：${applied.join("  ")}`);
+	}
+}
+applyCliOverrides();
+
 const now = () => Date.now();
 const b64 = (buf) => Buffer.from(buf).toString("base64url");
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
@@ -831,7 +862,12 @@ function findCloudflared() {
 let lastTunnelError = "";
 function startTunnel() {
 	const bin = findCloudflared();
-	if (!bin) { log("找不到 cloudflared：请用 --cloudflared 指定路径，或把 cloudflared 放进 PATH"); return null; }
+	if (!bin) {
+		// 给出**确实存在**的几条路，别让人去找一个不存在的参数
+		log("找不到 cloudflared。三种做法：① 指定路径：node guard.mjs tunnel up --cloudflared /路径/cloudflared.exe" +
+			"　② 放进 PATH　③ 拷到 <本仓库>/guard/ 或 <状态目录>/ 下（会优先被找到）");
+		return null;
+	}
 	if (/\.(cmd|bat)$/i.test(bin)) {
 		// Node 20+ 出于安全不再直接 spawn .cmd/.bat（报 spawn EINVAL），
 		// 而很多人会给 cloudflared 套一层批处理包装 —— 明确告诉他原因，别让他对着"等待域名超时"发呆。
@@ -1036,7 +1072,14 @@ if (cmd === "tunnel") {
 		conf.superviseTunnel = true;
 		saveConf();
 		const pid = startTunnel();
-		if (!pid) { console.log(lastTunnelError || "已经找不到 cloudflared 了，请用 --cloudflared 指定路径"); process.exit(1); }
+		if (!pid) {
+			console.log(lastTunnelError || (
+				"找不到 cloudflared。三种做法：\n" +
+				"  ① 指定路径：node guard.mjs tunnel up --cloudflared /路径/cloudflared.exe\n" +
+				"  ② 放进 PATH\n" +
+				"  ③ 拷到 <本仓库>/guard/ 或 <状态目录>/ 下（会被优先找到）"));
+			process.exit(1);
+		}
 		const url = await waitTunnelUrl(60);
 		if (!url && lastTunnelError) { console.log(lastTunnelError); process.exit(1); }
 		console.log(url ? `公网入口： ${url}/` : "等待域名超时，请查看 " + conf.tunnelLog);
