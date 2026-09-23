@@ -7,8 +7,8 @@ Tap one link on your phone and you're inside DSH — but **devices you never pai
 read-only devices **cannot send a single command**.
 
 > Status: guard, long-lived links, role enforcement, tunnel supervision, QR entry and the in-DSH panel are all
-> implemented and exercised. The suites total **245 assertions** — guard 111 / QR 46 / panel (real DOM) 33 /
-> plugin routes 29 / desktop helper 15 / live tunnel 11 — all green. Per-feature evidence is in the
+> implemented and exercised. The suites total **324 assertions** — guard 117 / QR 46 / panel (real DOM) 51 /
+> plugin routes 29 / desktop helper 15 / plugin installer 28 / one-command setup 27 / live tunnel 11 — all green. Per-feature evidence is in the
 > "Verification log" at the bottom.
 
 ---
@@ -224,7 +224,7 @@ guard/qr.mjs         built-in QR encoder (byte mode / versions 1–10 / L-M-Q-H 
 guard/ui.js          the control panel the guard injects into phone-side pages
 plugin/              DSH UI plugin (desktop "phone link" panel + control-plane routes)
 bin/                 desktop helper scripts (show / reset / QR / copy the link)
-test/                tests: selftest(111) qr(46) panel.dom(33) plugin(29) bin(15) tunnel(11)
+test/                tests: selftest(117) qr(46) panel.dom(51) plugin(29) bin(15) install(28) setup(27) tunnel(11)
 docs/deploy/         keep-alive templates for Windows / macOS / Linux
 ```
 
