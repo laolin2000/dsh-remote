@@ -149,6 +149,17 @@ port directly and never passes through the guard — so the desktop entry point 
 [`plugin/`](plugin/README.en.md). Its README documents the two hard requirements we tripped over
 (`exports["./package.json"]` must be exported; client chunks are hand-written `window.__ModuleLoader__.load`).
 
+Install it with one command (copies the package, appends the mount entry, updates the plugin-name list, backs up
+whatever it touches — **restart DSH afterwards**):
+
+```bash
+node bin/install-plugin.mjs                # or npm run install-plugin
+node bin/install-plugin.mjs --uninstall    # remove only what the installer added
+node bin/install-plugin.mjs --dry-run      # print the plan
+```
+
+The button then sits in the bottom-right corner, directly above the EAC monitor button, in the same column and style.
+
 There's also a plugin-free desktop helper: `bin/phone-link.cmd` (popup with the current link; `--reset` to rotate,
 `--role readonly` for the read-only link, `--qr` to open the QR image, `--quiet` to print without a popup).
 

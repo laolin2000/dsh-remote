@@ -13,6 +13,20 @@ dsh-remote 守卫能往它代理出去的页面里注脚本（那条路只覆盖
 
 ## 安装
 
+**推荐：一条命令**（自动拷包、追加挂载段、更新插件名清单、改动前备份）：
+
+```bash
+node bin/install-plugin.mjs                 # 装到 ~/.dsh/profiles/web-desktop
+node bin/install-plugin.mjs --profile <目录> # 指定 profile
+node bin/install-plugin.mjs --dry-run       # 只看计划，不落盘
+node bin/install-plugin.mjs --uninstall     # 反向卸载（只删自己加的，不碰别人的配置）
+```
+
+装完**必须重启 DSH**（插件树不热重载），右下角（EAC监控按钮上方）就会出现「手机链接」按钮。
+
+<details>
+<summary>手工安装（等价于上面脚本做的事）</summary>
+
 ```bash
 # 1) 把本目录拷进目标 profile 的 node_modules
 cp -r plugin "~/.dsh/profiles/web-desktop/node_modules/dsh-remote-panel"
@@ -28,6 +42,8 @@ cp -r plugin "~/.dsh/profiles/web-desktop/node_modules/dsh-remote-panel"
 ```
 
 **注意**：`.dsh-builtin-plugins.json` 里如果维护了一份插件名清单，需要把 `dsh-remote-panel` 加进去。
+
+</details>
 
 ## 两个硬性要求（踩过的坑，别再踩）
 

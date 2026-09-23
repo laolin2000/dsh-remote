@@ -14,6 +14,21 @@ passes through the guard**, so the only way to get an entry point into the deskt
 
 ## Install
 
+**One command** (copies the package, appends the mount entry, updates the plugin-name list, backs up anything it touches):
+
+```bash
+node bin/install-plugin.mjs                  # into ~/.dsh/profiles/web-desktop
+node bin/install-plugin.mjs --profile <dir>  # a specific profile
+node bin/install-plugin.mjs --dry-run        # print the plan, change nothing
+node bin/install-plugin.mjs --uninstall      # remove only what this installer added
+```
+
+After installing, **restart DSH** (the plugin tree is not hot-reloaded). The "手机链接" button then appears in
+the bottom-right corner, above the EAC monitor button.
+
+<details>
+<summary>Manual install (what the script does)</summary>
+
 ```bash
 # 1) copy this directory into the target profile's node_modules
 cp -r plugin "~/.dsh/profiles/web-desktop/node_modules/dsh-remote-panel"
@@ -25,10 +40,12 @@ cp -r plugin "~/.dsh/profiles/web-desktop/node_modules/dsh-remote-panel"
 #          config:
 #            guardPath: '<path to your dsh-remote checkout>/guard/guard.mjs'
 
-# 3) restart DSH (the plugin tree is not hot-reloaded: any patch or package change needs a restart)
+# 3) restart DSH (the plugin tree is not hot-reloaded)
 ```
 
 **Note**: if `.dsh-builtin-plugins.json` maintains a list of plugin names, add `dsh-remote-panel` to it.
+
+</details>
 
 ## Two hard requirements (learned the hard way — don't repeat them)
 

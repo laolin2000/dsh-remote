@@ -150,6 +150,16 @@ node guard/guard.mjs tunnel up|down|status   # down 会同时关掉「自动重�
 所以桌面入口是一个独立的 DSH 插件：[`plugin/`](plugin/) —— 见其 README（含两个踩坑硬要求：
 `exports["./package.json"]` 必须放行、客户端 chunk 用 `window.__ModuleLoader__.load` 手写）。
 
+一条命令装好（自动拷包、追加挂载段、更新插件名清单，改前先备份；**装完必须重启 DSH**）：
+
+```bash
+node bin/install-plugin.mjs                # 或 npm run install-plugin
+node bin/install-plugin.mjs --uninstall    # 反向卸载，只删自己加的
+node bin/install-plugin.mjs --dry-run      # 只看计划
+```
+
+装好后按钮出现在**右下角、EAC监控按钮的正上方**，与它同列同款。
+
 桌面端另有免装插件的取链接脚本：`bin/phone-link.cmd`
 （弹窗显示当前链接；`--reset` 重置、`--role readonly` 取只读链接、`--qr` 把二维码用看图程序打开、`--quiet` 只打印不弹窗）。
 
