@@ -1,0 +1,12 @@
+node_modules/
+*.log
+*.jsonl
+
+# 运行时状态（guard.json / public-url.txt / audit 等都在 $DSH_HOME/remote/，不在仓库内）
+# 但防止有人误把本地状态拷进来：
+guard.json
+guard.json.bak*
+public-url.txt
+tunnel.json
+__pycache__/
+.DS_Store

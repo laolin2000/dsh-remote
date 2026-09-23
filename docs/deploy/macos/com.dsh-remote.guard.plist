@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- dsh-remote — macOS launchd 用户级模板
+     安装： 拷到 ~/Library/LaunchAgents/com.dsh-remote.guard.plist，改好路径后：
+       launchctl load ~/Library/LaunchAgents/com.dsh-remote.guard.plist
+     查看链接： node ~/dsh-remote/guard/guard.mjs pair -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.dsh-remote.guard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>          <!-- 改成你的 node 路径（which node） -->
+    <string>/Users/YOU/dsh-remote/guard/guard.mjs</string>  <!-- 改成仓库路径 -->
+    <string>serve</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/dsh-remote-guard.out.log</string>
+  <key>StandardErrorPath</key><string>/tmp/dsh-remote-guard.err.log</string>
+</dict>
+</plist>

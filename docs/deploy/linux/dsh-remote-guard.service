@@ -1,0 +1,19 @@
+# dsh-remote — Linux systemd --user 模板
+# 安装： 拷到 ~/.config/systemd/user/dsh-remote-guard.service，改好路径后：
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now dsh-remote-guard
+# （想让它在未登录时也活着： sudo loginctl enable-linger $USER）
+# 查看链接： node ~/dsh-remote/guard/guard.mjs pair
+
+[Unit]
+Description=dsh-remote guard (device-authenticated remote access for DSH)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node %h/dsh-remote/guard/guard.mjs serve
+WorkingDirectory=%h/dsh-remote
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

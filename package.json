@@ -1,0 +1,34 @@
+{
+  "name": "dsh-remote",
+  "version": "0.1.0",
+  "description": "Device-authenticated remote access layer for DeepSeek Harness (DSH): pairing codes, per-device roles, server-side read-only enforcement, and tunnel supervision.",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "dsh-remote-guard": "guard/guard.mjs"
+  },
+  "scripts": {
+    "serve": "node guard/guard.mjs serve",
+    "pair": "node guard/guard.mjs pair",
+    "status": "node guard/guard.mjs status",
+    "test": "node test/selftest.mjs"
+  },
+  "files": [
+    "guard/",
+    "test/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "remote-access",
+    "reverse-proxy",
+    "device-pairing",
+    "cloudflared"
+  ]
+}

@@ -1,0 +1,6 @@
+# dsh-remote-panel bundle patch
+# 装上本插件（复制到 <profile>/node_modules/ 后由 profile 的 cordis.patch.yml 挂载）时，
+# 这一层负责把插件行插进 profile，无需手改 profile 文件。
+- insert:
+    - id: remote-panel
+      name: 'dsh-remote-panel'

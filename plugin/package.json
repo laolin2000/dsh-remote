@@ -1,0 +1,33 @@
+{
+  "name": "dsh-remote-panel",
+  "version": "0.1.0",
+  "description": "DSH 界面内的「手机链接」面板：生成/重置带一次性 token 的手机链接、查看与吊销已授权设备。配套 dsh-remote 守卫使用。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
+}

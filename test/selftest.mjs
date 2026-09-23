@@ -1,0 +1,275 @@
+#!/usr/bin/env node
+// ============================================================================
+// dsh-remote guard 自测：用「假 DSH 上游」把鉴权、角色、长期链接全部跑一遍。
+// 全程在临时目录与临时端口上进行，不接触真实 DSH、不改任何真实配置。
+//
+//   node test/selftest.mjs
+//
+// 覆盖：未授权拒绝 → 配对码（一次性）→ 长期链接（默认不变 / 重置才换 / 可重复用）
+//       → 只读设备读写边界 → WS 升级 → Origin 校验 → 控制面 owner-only
+//       → 吊销即刻生效 → 审计留痕
+// ============================================================================
+import http from "node:http";
+import net from "node:net";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
+const GUARD = path.join(SELF_DIR, "..", "guard", "guard.mjs");
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "guard-selftest-"));
+const UP_PORT = 34871;
+const GUARD_PORT = 34872;
+
+let pass = 0, fail = 0;
+function check(name, ok, detail = "") {
+	if (ok) { pass++; console.log(`  ✅ ${name}`); }
+	else { fail++; console.log(`  ❌ ${name}  ${detail}`); }
+}
+
+// ---------------------------------------------------------------- 假上游
+const upstreamSeen = [];
+const upstream = http.createServer((req, res) => {
+	let body = "";
+	req.on("data", (c) => { body += c; });
+	req.on("end", () => {
+		upstreamSeen.push({ method: req.method, url: req.url, host: req.headers.host, device: req.headers["x-dsh-remote-device"], role: req.headers["x-dsh-remote-role"] });
+		if (/^\/api\//.test(req.url)) {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ ok: true, upstream: true }));
+			return;
+		}
+		res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+		res.end("<html><head></head><body><div id=root>FAKE-DSH-UI</div></body></html>");
+	});
+});
+upstream.on("upgrade", (req, socket) => {
+	socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: dummy\r\n\r\n");
+});
+await new Promise((r) => upstream.listen(UP_PORT, "127.0.0.1", r));
+
+// ---------------------------------------------------------------- 起 guard
+const env = { ...process.env, DSH_REMOTE_DIR: TMP, DSH_HOME: TMP };
+fs.writeFileSync(path.join(TMP, "guard.json"), JSON.stringify({
+	port: GUARD_PORT, bind: "127.0.0.1", upstream: `http://127.0.0.1:${UP_PORT}`, superviseTunnel: false
+}, null, 2));
+
+const guard = spawn(process.execPath, [GUARD, "serve"], { env, stdio: ["ignore", "pipe", "pipe"] });
+const guardLog = [];
+guard.stdout.on("data", (c) => guardLog.push(String(c)));
+guard.stderr.on("data", (c) => guardLog.push(String(c)));
+await new Promise((r) => setTimeout(r, 1200));
+
+const BASE = `http://127.0.0.1:${GUARD_PORT}`;
+
+async function call(pathname, { method = "GET", cookie, body, headers = {}, bearer, local = false } = {}) {
+	const h = { ...headers };
+	// 默认模拟「经隧道从公网来」：守卫靠这些头区分本机直连与公网请求
+	if (!local && !Object.keys(h).some((k) => k.toLowerCase() === "x-forwarded-for")) h["x-forwarded-for"] = "203.0.113.7";
+	if (cookie) h.cookie = cookie;
+	if (bearer) h.authorization = `Bearer ${bearer}`;
+	if (body !== undefined) h["content-type"] = "application/json";
+	const res = await fetch(BASE + pathname, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual" });
+	const text = await res.text();
+	return { status: res.status, text, setCookie: res.headers.get("set-cookie") || "", headers: res.headers };
+}
+function wsProbe(pathname, cookie) {
+	return new Promise((resolve) => {
+		const key = Buffer.from("0123456789abcdef").toString("base64");
+		const lines = [`GET ${pathname} HTTP/1.1`, `Host: 127.0.0.1:${GUARD_PORT}`, "Upgrade: websocket", "Connection: Upgrade", `Sec-WebSocket-Key: ${key}`, "Sec-WebSocket-Version: 13"];
+		if (cookie) lines.push(`Cookie: ${cookie}`);
+		lines.push("", "");
+		const sock = net.connect(GUARD_PORT, "127.0.0.1", () => sock.write(lines.join("\r\n")));
+		let buf = "";
+		sock.on("data", (d) => { buf += String(d); if (buf.includes("\r\n\r\n")) { sock.destroy(); resolve(buf.split("\r\n")[0]); } });
+		sock.on("error", () => resolve("ERROR"));
+		setTimeout(() => { sock.destroy(); resolve("TIMEOUT"); }, 3000);
+	});
+}
+function runCli(args) {
+	return new Promise((resolve) => {
+		const p = spawn(process.execPath, [GUARD, ...args], { env, stdio: ["ignore", "pipe", "ignore"] });
+		let out = "";
+		p.stdout.on("data", (c) => { out += String(c); });
+		p.on("close", () => resolve(out));
+	});
+}
+async function pairingCode(role) {
+	const out = await runCli(["pair", "--code", "--role", role, "--name", role === "owner" ? "手机" : "iPad"]);
+	return (out.match(/([0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4})/) || [])[1] || null;
+}
+async function linkToken(role) {
+	const out = await runCli(["pair", "--role", role]);
+	const urls = out.match(/https?:\/\/\S+\?t=[A-Za-z0-9_-]+/g) || [];
+	return urls.length ? urls[urls.length - 1].split("t=")[1] : null;
+}
+
+const jar = {};
+
+console.log(`\n临时目录：${TMP}\n上游：127.0.0.1:${UP_PORT}　守卫：127.0.0.1:${GUARD_PORT}\n`);
+console.log("=== 1. 未授权一律拒绝（fail-closed）===");
+{
+	check("无 cookie 访问 / → 401", (await call("/")).status === 401);
+	const page = await call("/");
+	check("未授权看到的是配对页，不是 DSH 页面", page.text.includes("dsh-remote") && !page.text.includes("FAKE-DSH-UI"));
+	check("无 cookie POST /api/session.list → 401", (await call("/api/session.list", { method: "POST", body: {} })).status === 401);
+	check("伪造 cookie → 401", (await call("/", { cookie: "dsh_remote_sid=forged" })).status === 401);
+	const h = await call("/__guard/health");
+	check("健康检查无需鉴权 → 200 ok", h.status === 200 && h.text.trim() === "ok");
+}
+
+console.log("\n=== 2. 一次性配对码（临时给一台设备用）===");
+{
+	const ownerCode = await pairingCode("owner");
+	const roCode = await pairingCode("readonly");
+	check("能生成配对码", !!ownerCode && !!roCode, `${ownerCode} / ${roCode}`);
+	check("错误配对码 → 403", (await call("/__guard/pair", { method: "POST", body: { code: "AAAA-BBBB-CCCC" } })).status === 403);
+	const r = await call("/__guard/pair", { method: "POST", body: { code: ownerCode, name: "手机" } });
+	const j = JSON.parse(r.text);
+	check("正确配对码 → 200 且下发 cookie", r.status === 200 && /dsh_remote_sid=/.test(r.setCookie));
+	check("配对返回 owner 角色", j.device?.role === "owner");
+	jar.owner = r.setCookie.split(";")[0];
+	jar.ownerToken = j.token;
+	check("配对码一次性：再用 → 403", (await call("/__guard/pair", { method: "POST", body: { code: ownerCode } })).status === 403);
+
+	const r2 = await call("/__guard/pair", { method: "POST", body: { code: roCode, name: "iPad" } });
+	jar.readonly = r2.setCookie.split(";")[0];
+	check("第二个设备拿到 readonly 角色", JSON.parse(r2.text).device?.role === "readonly");
+}
+
+console.log("\n=== 3. 只读设备：读得到、写不动（服务端强制）===");
+{
+	check("只读 POST session.list → 放行", (await call("/api/session.list", { method: "POST", cookie: jar.readonly, body: {} })).status === 200);
+	check("只读 POST session.attachment → 放行（看图）", (await call("/api/session.attachment", { method: "POST", cookie: jar.readonly, body: {} })).status === 200);
+	check("只读 POST session.prompt → 403（发指令被拦）", (await call("/api/session.prompt", { method: "POST", cookie: jar.readonly, body: {} })).status === 403);
+	check("只读 POST session.cancel → 403", (await call("/api/session.cancel", { method: "POST", cookie: jar.readonly, body: {} })).status === 403);
+	check("只读 POST /__job-action → 403（杀任务被拦）", (await call("/__job-action", { method: "POST", cookie: jar.readonly, body: { action: "stop" } })).status === 403);
+	check("只读 POST /screen/touch → 403（触控注入被拦）", (await call("/screen/touch", { method: "POST", cookie: jar.readonly, body: {} })).status === 403);
+	const page = await call("/", { cookie: jar.readonly });
+	check("只读 GET / → 200（可浏览/看图）", page.status === 200 && page.text.includes("FAKE-DSH-UI"));
+	check("只读调用未知新方法 → 403（默认拒绝）", (await call("/api/some.future.method", { method: "POST", cookie: jar.readonly, body: {} })).status === 403);
+	check("只读访问面板控制面 → 403（防提权）", (await call("/__guard/link", { cookie: jar.readonly })).status === 403);
+}
+
+console.log("\n=== 4. owner 设备：能写、能看控制面 ===");
+{
+	check("owner POST session.prompt → 200", (await call("/api/session.prompt", { method: "POST", cookie: jar.owner, body: {} })).status === 200);
+	check("owner POST /__job-action → 200", (await call("/__job-action", { method: "POST", cookie: jar.owner, body: {} })).status === 200);
+	check("Bearer 设备令牌同样可用（供 App/CLI）", (await call("/api/session.list", { method: "POST", bearer: jar.ownerToken, body: {} })).status === 200);
+	check("owner 看状态 → 200 且列出设备", (await call("/__guard/status", { cookie: jar.owner })).status === 200);
+}
+
+console.log("\n=== 5. 上游收到的头（Host 改写仍然生效）===");
+{
+	const last = upstreamSeen.at(-1) || {};
+	check("上游看到 Host=127.0.0.1:<上游端口>", last.host === `127.0.0.1:${UP_PORT}`, `实际 ${last.host}`);
+	check("网关标记转发到上游", !!last.device && !!last.role, JSON.stringify(last));
+	check("同源 Origin 的写请求放行", (await call("/api/session.list", { method: "POST", cookie: jar.owner, body: {}, headers: { origin: `http://127.0.0.1:${GUARD_PORT}` } })).status === 200);
+	check("跨站 Origin 的写请求 → 403（CSRF）", (await call("/api/session.prompt", { method: "POST", cookie: jar.owner, body: {}, headers: { origin: "https://evil.example.com" } })).status === 403);
+}
+
+console.log("\n=== 6. WebSocket 升级 ===");
+{
+	check("无 cookie 升级 → 401", (await wsProbe("/api/events.mux")).includes("401"));
+	check("owner 升级 /api/events.mux → 101", (await wsProbe("/api/events.mux", jar.owner)).includes("101"));
+	check("只读升级 /api/events.host → 101", (await wsProbe("/api/events.host", jar.readonly)).includes("101"));
+	check("只读升级插件终端 WS → 403", (await wsProbe("/sidebar/ws/agent-terminals", jar.readonly)).includes("403"));
+	check("owner 升级插件终端 WS → 101（owner 不被拦）", (await wsProbe("/sidebar/ws/agent-terminals", jar.owner)).includes("101"));
+}
+
+console.log("\n=== 7. 长期链接：默认不变、重置才换、可重复使用（对齐 ZCode 形态）===");
+{
+	const a = await call("/__guard/links", { cookie: jar.owner });
+	const A = JSON.parse(a.text);
+	check("面板能读到两条当前链接", a.status === 200 && !!A.owner?.url && !!A.readonly?.url, a.text.slice(0, 120));
+
+	const b = await call("/__guard/links", { cookie: jar.owner });
+	const B = JSON.parse(b.text);
+	check("再读一次链接不变（长期有效）", A.owner.url === B.owner.url && A.readonly.url === B.readonly.url);
+
+	const c = await call("/__guard/link", { cookie: jar.owner });
+	check("读主链接不会改动它", JSON.parse(c.text).url === A.owner.url);
+	check("读只读链接不会换掉主链接", (await call("/__guard/link?role=readonly", { cookie: jar.owner })).status === 200 && JSON.parse((await call("/__guard/links", { cookie: jar.owner })).text).owner.url === A.owner.url);
+
+	const t1 = A.owner.url.split("t=")[1];
+	const t2 = A.readonly.url.split("t=")[1];
+	check("长期链接第一次使用 → 302", (await call("/?t=" + t1)).status === 302);
+	check("同一链接可再次使用（不是一次性）", (await call("/?t=" + t1)).status === 302);
+	const roUse = await call("/?t=" + t2);
+	check("只读链接可用 → 302 且角色是只读", roUse.status === 302, "实际 " + roUse.status);
+	const roCookie = roUse.setCookie.split(";")[0];
+	check("只读链接换来的设备写被拦（403）", (await call("/api/session.prompt", { method: "POST", cookie: roCookie, body: {} })).status === 403);
+	check("同一台设备反复开链接不会堆设备（按名字复用）", (await call("/?t=" + t1)).status === 302);
+
+	const e = await call("/__guard/link?reset=1", { cookie: jar.owner });
+	const E = JSON.parse(e.text);
+	const F = JSON.parse((await call("/__guard/links", { cookie: jar.owner })).text);
+	check("重置后主链接变了", !!E.url && E.url !== A.owner.url);
+	check("重置后只读链接也换了（不留旧凭据）", F.readonly.url !== A.readonly.url);
+	check("旧链接重置后立即失效 → 401", (await call("/?t=" + t1)).status === 401);
+	check("重置不会踢掉已配对设备", (await call("/api/session.list", { method: "POST", cookie: jar.owner, body: {} })).status === 200);
+}
+
+console.log("\n=== 8. 吊销与状态 ===");
+{
+	const st = JSON.parse((await call("/__guard/status", { cookie: jar.owner })).text);
+	check("owner 状态里列出设备（含刚配的两台 + 链接换来的）", (st.devices || []).length >= 2, JSON.stringify((st.devices || []).map((d) => d.name)));
+	check("只读设备看状态 → 403", (await call("/__guard/status", { cookie: jar.readonly })).status === 403);
+	const revoke = spawn(process.execPath, [GUARD, "revoke", "iPad"], { env, stdio: "ignore" });
+	await new Promise((r) => revoke.on("close", r));
+	check("吊销后原 cookie 立即失效 → 401", (await call("/api/session.list", { method: "POST", cookie: jar.readonly, body: {} })).status === 401);
+	check("owner 不受影响 → 200", (await call("/api/session.list", { method: "POST", cookie: jar.owner, body: {} })).status === 200);
+}
+
+console.log("\n=== 9. 本机直连可信 + 公网仍须鉴权（关键区分）===");
+{
+	// 不带隧道头 = 本机直连（DSH 桌面页面靠这条兜底）→ 视为 owner
+	const localStatus = await call("/__guard/status", { local: true });
+	check("本机直连（无隧道头）→ 200，等同 owner", localStatus.status === 200, "实际 " + localStatus.status);
+	check("本机直连设备名标为「本机(直连)」", localStatus.text.includes("本机"), localStatus.text.slice(0, 80));
+	const localLinks = await call("/__guard/links", { local: true });
+	check("本机直连能读到链接", localLinks.status === 200 && JSON.parse(localLinks.text).ok === true, "实际 " + localLinks.status);
+
+	// 带隧道头但没有 cookie = 公网未授权 → 必须 401（否则就是泄漏）
+	const remote = await call("/__guard/status");
+	check("经隧道无 cookie 访问控制面 → 403（本机可信没有把公网放进来）", remote.status === 403, "实际 " + remote.status);
+	const remotePage = await call("/");
+	check("经隧道无 cookie 打开页面 → 401 配对页，不是 DSH", remotePage.status === 401 && !remotePage.text.includes("FAKE-DSH-UI"));
+
+	// 伪造隧道头也不该被当成本机
+	const spoof = await call("/__guard/links", { headers: { "cf-connecting-ip": "1.2.3.4" } });
+	check("只加一个 Cf- 头也不能白拿 owner 权限 → 403", spoof.status === 403, "实际 " + spoof.status);
+
+	// CORS：只对本机来源页面放开
+	const cors = await call("/__guard/links", { local: true, headers: { origin: "http://127.0.0.1:50142" } });
+	check("本机来源页面的跨源读 → 带 Access-Control-Allow-Origin", cors.headers.get("access-control-allow-origin") === "http://127.0.0.1:50142", JSON.stringify(cors.headers.get("access-control-allow-origin")));
+	const corsRemote = await call("/", { headers: { origin: "https://evil.example.com" } });
+	check("公网来源拿不到 CORS 放行", !corsRemote.headers.get("access-control-allow-origin"));
+	const preflight = await call("/__guard/links", { method: "OPTIONS", headers: { origin: "http://127.0.0.1:50142" } });
+	check("OPTIONS 预检 → 204", preflight.status === 204, "实际 " + preflight.status);
+}
+
+console.log("\n=== 10. 审计日志 ===");
+{
+	const auditFile = path.join(TMP, "audit.jsonl");
+	const lines = fs.existsSync(auditFile) ? fs.readFileSync(auditFile, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
+	const kinds = new Set(lines.map((l) => l.event + ":" + (l.reason || l.result || "")));
+	check("审计有记录", lines.length > 0, `${lines.length} 行`);
+	check("记下了只读被拒", [...kinds].some((k) => k.includes("readonly")), [...kinds].join(","));
+	check("记下了未授权拒绝", [...kinds].some((k) => k.includes("unauthenticated")));
+	check("记下了配对成功", [...kinds].some((k) => k.includes("pair:ok")));
+	check("记下了链接兑换", [...kinds].some((k) => k.startsWith("link")));
+	check("记下了重置链接", [...kinds].some((k) => k.includes("reset-link")));
+}
+
+// ---------------------------------------------------------------- 收尾
+guard.kill();
+upstream.close();
+await new Promise((r) => setTimeout(r, 300));
+console.log(`\n================ 结果：${pass} 通过 / ${fail} 失败 ================`);
+if (fail) console.log("（guard 日志尾部）\n" + guardLog.join("").split("\n").slice(-12).join("\n"));
+if (process.env.KEEP_TMP === "1") console.log("临时目录保留：" + TMP);
+else fs.rmSync(TMP, { recursive: true, force: true });
+process.exit(fail ? 1 : 0);
