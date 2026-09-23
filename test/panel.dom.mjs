@@ -230,5 +230,45 @@ console.log("\n=== D. 剪贴板被拒时如实报错 ===");
 	check("自动复制失败时提示手动选中，而不是假装成功", (layer(w).textContent || "").includes("手动") || (layer(w).textContent || "").includes("拦下"), (layer(w).textContent || "").slice(0, 120));
 }
 
+console.log("\n=== E. 按钮位置：与「EAC监控」排成一列（用户指定的位置）===");
+{
+	// 场景 1：页面上有 EAC 监控按钮 → 应贴在它正上方、同一列（相同的 right）
+	const { w } = setupDom({ scriptPath: path.join(SELF_DIR, "..", "guard", "ui.js") });
+	const eac = w.document.createElement("div");
+	eac.setAttribute("style", "position:fixed;right:14px;bottom:14px;padding:6px 12px;border-radius:999px");
+	eac.textContent = "EAC监控";
+	w.document.body.appendChild(eac);
+	// jsdom 不做布局：手动给 EAC 按钮一个真实浏览器里的矩形（right = 1024-14, top = 768-14-27）
+	eac.getBoundingClientRect = () => ({ right: 1010, top: 727, left: 950, bottom: 754, width: 60, height: 27, x: 950, y: 727 });
+	await tick(); await tick();
+	const b = btn(w);
+	check("按钮存在", !!b);
+	check("与 EAC 按钮同一列（right 相同）", b.style.right === "14px", b.style.right);
+	check("位于 EAC 按钮正上方（bottom = EAC 顶边 + 8px 间距）", b.style.bottom === "49px", b.style.bottom);
+
+	// 场景 2：页面上没有 EAC 按钮 → 用缺省位置（右下角、大约 EAC 按钮上方）
+	const { w: w2 } = setupDom({ scriptPath: path.join(SELF_DIR, "..", "guard", "ui.js") });
+	await tick(); await tick(); await tick();
+	const b2 = btn(w2);
+	check("没有 EAC 按钮时也在右侧（缺省 right:14px）", b2.style.right === "14px", b2.style.right);
+	check("缺省 bottom 是 56px（EAC 按钮的缺省高度之上）", b2.style.bottom === "56px", b2.style.bottom);
+
+	// 场景 3：插件版同样对齐
+	const { w: w3 } = setupDom({ scriptPath: path.join(SELF_DIR, "..", "plugin", "lib", "client.js") });
+	const eac3 = w3.document.createElement("div");
+	eac3.setAttribute("style", "position:fixed;right:14px;bottom:14px");
+	eac3.textContent = "EAC 监控";
+	w3.document.body.appendChild(eac3);
+	eac3.getBoundingClientRect = () => ({ right: 1010, top: 727, left: 950, bottom: 754, width: 60, height: 27, x: 950, y: 727 });
+	const mod3 = w3.__slots["dsh-remote-panel"];
+	const reg3 = [];
+	mod3.apply({ slots: { register: (o, c) => { reg3.push({ opts: o, comp: c }); return () => {}; } } });
+	reg3[0].comp();
+	await tick(); await tick();
+	const b3 = btn(w3);
+	check("插件版同样与 EAC 同列（right 相同，容忍空格写法）", b3 && b3.style.right === "14px", b3 && b3.style.right);
+	check("插件版同样在其正上方", b3 && b3.style.bottom === "49px", b3 && b3.style.bottom);
+}
+
 console.log(`\n================ 结果：${pass} 通过 / ${fail} 失败 ================`);
 process.exit(fail ? 1 : 0);

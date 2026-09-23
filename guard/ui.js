@@ -58,8 +58,8 @@
   }
 
   var CSS = {
-    btn: "position:fixed;left:14px;bottom:14px;z-index:2147483000;display:flex;align-items:center;gap:6px;" +
-         "padding:9px 13px;border-radius:20px;cursor:pointer;font:13px/1 -apple-system,'Microsoft YaHei',sans-serif;" +
+    btn: "position:fixed;right:14px;bottom:56px;z-index:2147483000;display:flex;align-items:center;gap:6px;" +
+         "padding:9px 13px;border-radius:999px;cursor:pointer;font:13px/1 -apple-system,'Microsoft YaHei',sans-serif;" +
          "color:#d7f5e3;background:#10231b;border:1px solid #1f5c3f;box-shadow:0 4px 14px rgba(0,0,0,.45);user-select:none",
     mask: "position:fixed;inset:0;background:rgba(0,0,0,.45)",
     panel: "position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(94vw,560px);" +
@@ -289,6 +289,32 @@
     });
   }
 
+  /** 和「EAC监控」的悬浮按钮排成一列：贴着它的正上方（同一列 = 相同的 right）。
+   *  EAC 按钮的位置不归我们管，所以挂载时动态测量，测不到就用缺省位置；
+   *  EAC 可能比我们后挂载，所以短促重试几次。 */
+  function placeAboveEac(btn, attempt) {
+    attempt = attempt || 0;
+    var target = null;
+    var divs = document.querySelectorAll("div");
+    for (var i = 0; i < divs.length; i++) {
+      var e = divs[i];
+      if (e.id === "__dsh_remote_button" || !e.firstChild) continue;
+      var t = (e.textContent || "").replace(/\s+/g, "");
+      if (t.indexOf("EAC监控") === 0 || t.indexOf("EAC监") === 0) {
+        try { if (getComputedStyle(e).position === "fixed") { target = e; break; } } catch (err) {}
+      }
+    }
+    if (target) {
+      var r = target.getBoundingClientRect();
+      if (r.width > 0 || r.height > 0) {
+        btn.style.right = Math.max(8, window.innerWidth - r.right) + "px";
+        btn.style.bottom = Math.max(8, window.innerHeight - r.top + 8) + "px";
+        return;
+      }
+    }
+    if (attempt < 10) setTimeout(function () { placeAboveEac(btn, attempt + 1); }, 500);
+  }
+
   function mount() {
     // 插件版（dsh-remote-panel）已经挂过按钮就不要再挂一个，否则手机端会出现两个
     if (document.getElementById("__dsh_remote_button")) return;
@@ -299,6 +325,7 @@
     btn.appendChild(el("span", null, "手机链接"));
     btn.addEventListener("click", open);
     document.body.appendChild(btn);
+    placeAboveEac(btn);
   }
 
   function boot() {
