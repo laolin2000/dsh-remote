@@ -155,6 +155,24 @@ console.log("\n=== 6. 没配 guardPath 时的失败信息 ===");
 	check("但读链接不依赖 guardPath（直接读状态文件）→ 200", res2.statusCode === 200, String(res2.statusCode));
 }
 
+console.log("\n=== 7. 没有公网入口时也不能给出一条没有域名的链接（回归用例）===");
+{
+	// 清掉 urlFile 与隧道状态：模拟"隧道还没起来"的真实情况
+	const conf = JSON.parse(fs.readFileSync(GUARD_CONF, "utf8"));
+	try { fs.rmSync(conf.urlFile || path.join(TMP, "remote", "public-url.txt"), { force: true }); } catch {}
+	fs.writeFileSync(path.join(TMP, "remote", "tunnel.json"), JSON.stringify({ pid: null, url: null, startedAt: null, desired: true, restarts: 1 }), "utf8");
+	const r = await call("/dsh-remote/links");
+	const u = r.json?.owner?.url || "";
+	check("链接带上了本机域名前缀（不再是 /?t=…）", /^https?:\/\/[^/]+\/\?t=[A-Za-z0-9_-]+$/.test(u), JSON.stringify(u));
+	check("前缀是守卫的绑定地址与端口（127.0.0.1:8443）", u.startsWith("http://127.0.0.1:8443/?t="), u);
+	check("标记 local=true，面板据此提示要先起隧道", r.json?.owner?.local === true && r.json?.local === true, JSON.stringify({ o: r.json?.owner?.local, l: r.json?.local }));
+	check("只读那条同样是完整 URL", /^https?:\/\/[^/]+\/\?t=/.test(r.json?.readonly?.url || ""), r.json?.readonly?.url);
+	// 有公网域名时应优先用它，且 local=false
+	fs.writeFileSync(conf.urlFile, "https://demo-entry.trycloudflare.com\n", "utf8");
+	const r2 = await call("/dsh-remote/links");
+	check("有公网入口时用公网域名且 local=false", r2.json?.owner?.url.startsWith("https://demo-entry.trycloudflare.com/?t=") && r2.json?.owner?.local === false, JSON.stringify(r2.json?.owner));
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n================ 结果：${pass} 通过 / ${fail} 失败 ================`);
 process.exit(fail ? 1 : 0);

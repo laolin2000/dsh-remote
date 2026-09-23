@@ -322,7 +322,10 @@ function currentLink(role = "owner", { reset = false, name = "" } = {}) {
 		saveConf();
 	}
 	const l = conf.links[r];
-	return { url: `${entryUrl()}/?t=${l.token}`, token: l.token, role: l.role, name: l.name, createdAt: l.createdAt, longLived: true };
+	// local=true 表示还没有公网入口，这条链接只能在电脑本机打开（面板据此给出提示）
+	const base = entryUrl();
+	const local = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(base);
+	return { url: `${base}/?t=${l.token}`, token: l.token, role: l.role, name: l.name, createdAt: l.createdAt, longLived: true, local };
 }
 
 /** 用长期链接把设备接进来：可重复使用（同一台设备认到同名记录时刷新它的 token，不再堆设备）。
@@ -845,10 +848,12 @@ function alive(pid) {
 }
 function findCloudflared() {
 	if (conf.cloudflared && fs.existsSync(conf.cloudflared)) return conf.cloudflared;
+	if (process.env.DSH_REMOTE_CLOUDFLARED && fs.existsSync(process.env.DSH_REMOTE_CLOUDFLARED)) return path.resolve(process.env.DSH_REMOTE_CLOUDFLARED);
 	const candidates = [
 		path.join(SELF_DIR, "cloudflared.exe"),
 		path.join(SELF_DIR, "cloudflared"),
-		path.join(CONF_DIR, "cloudflared.exe")
+		path.join(CONF_DIR, "cloudflared.exe"),
+		path.join(CONF_DIR, "cloudflared")
 	];
 	for (const c of candidates) if (fs.existsSync(c)) return c;
 	for (const dir of String(process.env.PATH || "").split(path.delimiter)) {
@@ -856,6 +861,23 @@ function findCloudflared() {
 			const c = path.join(dir, name);
 			if (fs.existsSync(c)) return c;
 		}
+	}
+	// Windows 上常见的标准安装位置（winget / choco / 手装）
+	if (process.platform === "win32") {
+		const guesses = [
+			"C:/Program Files (x86)/cloudflared/cloudflared.exe",
+			"C:/Program Files/cloudflared/cloudflared.exe",
+			"C:/ProgramData/chocolatey/bin/cloudflared.exe"
+		];
+		for (const g of guesses) if (fs.existsSync(g)) return g;
+		try {
+			const root = path.join(HOME, "AppData", "Local", "Microsoft", "WinGet", "Packages");
+			for (const d of fs.readdirSync(root)) {
+				if (!/cloudflare/i.test(d)) continue;
+				const p = path.join(root, d);
+				for (const f of fs.readdirSync(p)) if (/^cloudflared\.exe$/i.test(f)) return path.join(p, f);
+			}
+		} catch { /* 没有就算 */ }
 	}
 	return null;
 }

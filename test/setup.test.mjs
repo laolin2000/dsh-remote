@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -39,7 +40,11 @@ const pluginDir = path.join(PROFILE, "node_modules", "dsh-remote-panel");
 const portFree = async (port) => { try { await fetch(`http://127.0.0.1:${port}/__guard/health`, { signal: AbortSignal.timeout(800) }); return false; } catch { return true; } };
 async function killGuard(pid) { if (!pid) return; try { spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" }); } catch { try { process.kill(pid); } catch {} } await new Promise((r) => setTimeout(r, 800)); }
 
-const PORT = 39771;
+// 用系统分配的空闲端口：避免与上一次跑的遗留实例冲突（踩过：崩溃的测试留下守卫占着固定端口）
+const PORT = await new Promise((resolve) => {
+	const srv = net.createServer();
+	srv.listen(0, "127.0.0.1", () => { const p = srv.address().port; srv.close(() => resolve(p)); });
+});
 
 console.log("\n=== 1. --dry-run：不落盘、不起进程 ===");
 {
@@ -74,6 +79,7 @@ console.log("\n=== 3. 全流程（不起隧道，用本机端口）===");
 	check("报告里 tunnel=disabled", rep?.tunnel === "disabled", JSON.stringify(rep));
 	check("报告里给出链接且端口正确", typeof rep?.ownerUrl === "string" && rep.ownerUrl.includes(`:${PORT}/?t=`), rep?.ownerUrl);
 	check("走了 pair（输出里有主链接与只读链接）", /① 主设备/.test(r.out) && /② 只读设备/.test(r.out));
+	check("--no-tunnel 会顺手关掉隧道守护（免得反复尝试拉起）", JSON.parse(fs.readFileSync(guardJson, "utf8")).superviseTunnel === false);
 	check("打印了终端二维码", /[▀▄█]/.test(r.out));
 	check("提示了本机入口的局限（非 https）", /本机\/局域网入口|公网/.test(r.out));
 	check("报告里 guard 记录了 pid", /^pid \d+$/.test(String(rep?.guard)), String(rep?.guard));
@@ -86,6 +92,24 @@ console.log("\n=== 3. 全流程（不起隧道，用本机端口）===");
 	// 收尾：杀掉自己起的守卫
 	await killGuard(Number(String(rep.guard).replace("pid ", "")));
 	check("收尾后端口已释放", await portFree(PORT));
+}
+
+console.log("\n=== 3b. cloudflared 发现顺序：环境变量 / 上次记住的路径 ===");
+{
+	// 用一个假文件即可：本用例不起隧道，只验证「被发现并记住」
+	const fake = path.join(BASE, "fake-cloudflared.exe");
+	fs.writeFileSync(fake, "not a real binary", "utf8");
+	const r = await new Promise((resolve) => {
+		const p = spawn(process.execPath, [SETUP, "--profile", PROFILE, "--port", String(PORT), "--no-tunnel"],
+			{ env: { ...process.env, DSH_HOME: BASE, DSH_REMOTE_DIR: STATE, DSH_REMOTE_CLOUDFLARED: fake }, stdio: ["ignore", "pipe", "pipe"] });
+		let out = ""; p.stdout.on("data", (c) => out += String(c)); p.stderr.on("data", (c) => out += String(c));
+		p.on("close", (code) => resolve({ code, out }));
+	});
+	const cfg = JSON.parse(fs.readFileSync(guardJson, "utf8"));
+	check("环境变量 DSH_REMOTE_CLOUDFLARED 指定的路径被采用并写进 guard.json", cfg.cloudflared === fake, cfg.cloudflared);
+	const r2 = await run(["--profile", PROFILE, "--port", String(PORT), "--no-tunnel"]);
+	check("再次运行时复用已记住的路径（无需再传参数）", r2.out.includes("fake-cloudflared.exe"), r2.out.split("\n").filter((l) => l.includes("cloudflared")).join(" | ").slice(0, 160));
+	await killGuard(Number(String(report(r2.out)?.guard || "").replace("pid ", "")));
 }
 
 console.log("\n=== 4. 守卫引用的是仓库里的脚本（路径可移植）===");

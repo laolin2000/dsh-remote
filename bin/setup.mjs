@@ -62,13 +62,40 @@ async function probe(url, ms = 2500) {
 }
 function findCloudflared() {
 	if (CLOUDFLARED_FLAG && fs.existsSync(CLOUDFLARED_FLAG)) return path.resolve(CLOUDFLARED_FLAG);
+	// ① 环境变量指定
+	const envPath = process.env.DSH_REMOTE_CLOUDFLARED;
+	if (envPath && fs.existsSync(envPath)) return path.resolve(envPath);
+	// ② 上次配过的路径（配过一次就记住，不用每次再传 --cloudflared）
+	const saved = readConf().cloudflared;
+	if (saved && fs.existsSync(saved)) return saved;
+	// ③ 仓库内 / 状态目录内
 	const local = [path.join(REPO, "guard", "cloudflared.exe"), path.join(REPO, "guard", "cloudflared"), path.join(CONF_DIR, "cloudflared.exe")];
 	for (const c of local) if (fs.existsSync(c)) return c;
+	// ④ PATH
 	for (const dir of String(process.env.PATH || "").split(path.delimiter)) {
 		for (const name of ["cloudflared.exe", "cloudflared"]) {
 			const c = path.join(dir, name);
 			if (fs.existsSync(c)) return c;
 		}
+	}
+	// ⑤ Windows 上几个常见的标准安装位置（winget / choco / 手装）
+	if (process.platform === "win32") {
+		const guesses = [
+			"C:/Program Files (x86)/cloudflared/cloudflared.exe",
+			"C:/Program Files/cloudflared/cloudflared.exe",
+			"C:/ProgramData/chocolatey/bin/cloudflared.exe"
+		];
+		for (const g of guesses) if (fs.existsSync(g)) return g;
+		try {
+			const winget = path.join(os.homedir(), "AppData", "Local", "Microsoft", "WinGet", "Packages");
+			for (const d of fs.readdirSync(winget)) {
+				if (!/cloudflare/i.test(d)) continue;
+				const p = path.join(winget, d);
+				for (const f of fs.readdirSync(p)) {
+					if (/^cloudflared\.exe$/i.test(f)) return path.join(p, f);
+				}
+			}
+		} catch { /* 没有 winget 目录就跳过 */ }
 	}
 	return "";
 }
@@ -125,7 +152,11 @@ if (NO_GUARD) {
 
 	const cf = findCloudflared();
 	if (cf) { overrides.push("--cloudflared", cf); say(`  · cloudflared: ${cf}`); }
-	else say("  ⚠ 没找到 cloudflared → 只能给本机链接；public 入口稍后手动开（--cloudflared 指路径）");
+	else say("  ⚠ 没找到 cloudflared → 只能给本机链接。三种做法：\n" +
+		"      ① 重跑本脚本并指定路径：node bin/setup.mjs --cloudflared \"D:/路径/cloudflared.exe\"（会被记住）\n" +
+		"      ② 设环境变量 DSH_REMOTE_CLOUDFLARED=<完整路径>\n" +
+		"      ③ 把它放进 PATH，或拷到 <仓库>/guard/ 下");
+	if (NO_TUNNEL) overrides.push("--supervise", "0");   // 不要公网入口就别去守护隧道（免得反复尝试拉起）
 
 	if (!DRY) await run(GUARD, ["print", ...overrides], { silent: true });   // print 会持久化覆盖项
 	else say(`  （将要写入 ${confFile()}：${overrides.join(" ")}）`);

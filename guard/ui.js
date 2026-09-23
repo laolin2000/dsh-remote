@@ -258,7 +258,10 @@
         box.textContent = state.owner || "（无）";
         roBox.textContent = state.readonly || "（无）";
         var when = d.owner && d.owner.createdAt ? new Date(d.owner.createdAt).toLocaleString() : "";
+        var isLocal = !!(d.owner && d.owner.local);
         if (when) say("链接创建于 " + when + " · 长期有效", CSS.mut);
+        if (isLocal) say("⚠ 这还不是公网链接：当前是本机入口（只有这台电脑能打开）。" +
+          "手机要用，先在电脑上跑：node guard.mjs tunnel up（或面板外的 setup）", CSS.bad);
       });
     }
 

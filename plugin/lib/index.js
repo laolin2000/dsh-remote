@@ -73,7 +73,9 @@ async function readBody(req) {
 
 
 /** 从守卫的状态文件里拼出当前两条链接的 URL（不解析 CLI 输出，稳定）。
- *  链接长期有效；要换新的必须走 /dsh-remote/reset。 */
+ *  链接长期有效；要换新的必须走 /dsh-remote/reset。
+ *  没有公网入口时**必须退回本机入口**——否则会拼出没有域名的 "/?t=..."，
+ *  面板上看着就是一条坏链接（实测踩到过：隧道没起来时就是这个样子）。 */
 function linksFromState() {
 	const conf = readJson(GUARD_CONF) || {};
 	const tun = readJson(TUNNEL_STATE) || {};
@@ -82,9 +84,11 @@ function linksFromState() {
 		if (conf.urlFile && fs.existsSync(conf.urlFile)) base = fs.readFileSync(conf.urlFile, "utf8").trim();
 	} catch { /* 读不到就用隧道状态里的域名 */ }
 	if (!base) base = tun.url || "";
-	base = base.replace(/\/+$/, "");
-	const mk = (l) => (l && l.token ? { url: base + "/?t=" + l.token, role: l.role, name: l.name, createdAt: l.createdAt, longLived: true } : null);
-	return { owner: mk(conf.links && conf.links.owner), readonly: mk(conf.links && conf.links.readonly) };
+	base = String(base).replace(/\/+$/, "");
+	const local = !base;                                   // true = 还没有公网入口
+	if (local) base = `http://${conf.bind || "127.0.0.1"}:${conf.port || 8443}`;
+	const mk = (l) => (l && l.token ? { url: base + "/?t=" + l.token, role: l.role, name: l.name, createdAt: l.createdAt, longLived: true, local } : null);
+	return { owner: mk(conf.links && conf.links.owner), readonly: mk(conf.links && conf.links.readonly), local };
 }
 
 function guardSnapshot() {

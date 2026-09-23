@@ -282,7 +282,11 @@ window.__ModuleLoader__.load({
 					box.textContent = state.owner || "（无）";
 					roBox.textContent = state.readonly || "（无）";
 					const when = d.owner && d.owner.createdAt ? new Date(d.owner.createdAt).toLocaleString() : "";
-					if (when) say("链接创建于 " + when + " · 长期有效" + (usedFallback ? "（插件路由不可用，已直连守卫）" : ""), usedFallback ? CSS.mut : CSS.mut);
+					const isLocal = !!(d.owner && d.owner.local) || !!d.local;
+					if (when) say("链接创建于 " + when + " · 长期有效" + (usedFallback ? "（插件路由不可用，已直连守卫）" : ""), CSS.mut);
+					// 没有公网入口时必须说清楚，否则用户以为链接坏了（实测踩到过：只显示 "/?t=..."）
+					if (isLocal) say("⚠ 这还不是公网链接：当前是本机入口（只有这台电脑能打开）。手机要用，先在电脑上跑 " +
+						"node guard/guard.mjs tunnel up --cloudflared <cloudflared 路径>", CSS.bad);
 				});
 			}
 
