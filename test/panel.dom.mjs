@@ -270,5 +270,44 @@ console.log("\n=== E. 按钮位置：与「EAC监控」排成一列（用户指�
 	check("插件版同样在其正上方", b3 && b3.style.bottom === "49px", b3 && b3.style.bottom);
 }
 
+console.log("\n=== F. 两个按钮大小与颜色统一（与 EAC 监控同一套样式）===");
+{
+	// 断言依据：dsh-eac-monitor 的 .em-quick / .em-dot / .em-quickText 的实际样式值
+	const { w } = setupDom({ scriptPath: path.join(SELF_DIR, "..", "guard", "ui.js") });
+	await tick(); await tick();
+	const b = btn(w);
+	const raw = () => b.getAttribute("style") || "";
+	check("内边距与 EAC 一致（6px 12px）", b.style.padding === "6px 12px", b.style.padding);
+	check("圆角一致（999px 胶囊）", b.style.borderRadius === "999px", b.style.borderRadius);
+	// jsdom 会把 color-mix 这类新语法丢掉，所以背景/描边比对原始 style 属性
+	check("背景用同一主题变量（bg-layer-2）", raw().includes("--dsw-alias-bg-layer-2"), raw().slice(0, 120));
+	check("描边用同一主题变量（border-l1）", raw().includes("--dsw-alias-border-l1"), raw().slice(0, 120));
+	check("阴影一致", b.style.boxShadow === "0 4px 14px rgba(0,0,0,.35)", b.style.boxShadow);
+	check("字号一致（11px）", raw().includes("font:11px/1"), raw().slice(0, 120));
+	const dot = b.children[0], text = b.children[1];
+	const dotRaw = dot.getAttribute("style") || "";
+	check("状态点与 EAC 的 .em-dot 同规格同色（8px，#22c55e）",
+		dotRaw.includes("width:8px") && dotRaw.includes("height:8px") && dotRaw.includes("#22c55e"), dotRaw);
+	check("文字颜色与 .em-quickText 一致（label-secondary 变量）", text.getAttribute("style").includes("--dsw-alias-label-secondary"), text.getAttribute("style"));
+	// 悬停描边变成主题蓝（EAC 的 :hover 行为）
+	b.dispatchEvent(new w.MouseEvent("mouseenter", { bubbles: false }));
+	check("悬停时描边与 EAC 一致（business-primary）", b.style.borderColor.includes("--dsw-alias-state-business-primary"), b.style.borderColor);
+	b.dispatchEvent(new w.MouseEvent("mouseleave", { bubbles: false }));
+	check("移开后描边还原", b.style.borderColor.includes("--dsw-alias-border-l1"), b.style.borderColor);
+
+	// 插件版同样断言
+	const { w: w4 } = setupDom({ scriptPath: path.join(SELF_DIR, "..", "plugin", "lib", "client.js") });
+	const mod4 = w4.__slots["dsh-remote-panel"];
+	const reg4 = [];
+	mod4.apply({ slots: { register: (o, c) => { reg4.push({ o, c }); return () => {}; } } });
+	reg4[0].c();
+	await tick(); await tick();
+	const b4 = btn(w4);
+	const raw4 = b4.getAttribute("style") || "";
+	check("插件版同样统一（内边距/背景/字号）",
+		raw4.includes("padding:6px 12px") && raw4.includes("--dsw-alias-bg-layer-2") && raw4.includes("font:11px/1"),
+		raw4.slice(0, 120));
+}
+
 console.log(`\n================ 结果：${pass} 通过 / ${fail} 失败 ================`);
 process.exit(fail ? 1 : 0);

@@ -58,9 +58,17 @@
   }
 
   var CSS = {
+    // 与「EAC监控」悬浮按钮（dsh-eac-monitor 的 .em-quick）同一套大小与配色：
+    // 同样的内边距/圆角/阴影，背景与描边用同一批 DSH 主题变量（跟随主题），文字 11px 同色。
     btn: "position:fixed;right:14px;bottom:56px;z-index:2147483000;display:flex;align-items:center;gap:6px;" +
-         "padding:9px 13px;border-radius:999px;cursor:pointer;font:13px/1 -apple-system,'Microsoft YaHei',sans-serif;" +
-         "color:#d7f5e3;background:#10231b;border:1px solid #1f5c3f;box-shadow:0 4px 14px rgba(0,0,0,.45);user-select:none",
+         "padding:6px 12px;border-radius:999px;cursor:pointer;font:11px/1 -apple-system,'Microsoft YaHei',sans-serif;" +
+         "background:color-mix(in srgb,var(--dsw-alias-bg-layer-2,#101828) 92%,transparent);" +
+         "border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.12));" +
+         "box-shadow:0 4px 14px rgba(0,0,0,.35);user-select:none",
+    dot: "width:8px;height:8px;border-radius:50%;flex:none;background:#22c55e",
+    hoverBorder: "var(--dsw-alias-state-business-primary,#4d6bfe)",   // 与 EAC 按钮一致的悬停描边
+    normalBorder: "var(--dsw-alias-border-l1,rgba(255,255,255,.12))",
+    text: "color:var(--dsw-alias-label-secondary,#b8c5ea)",
     mask: "position:fixed;inset:0;background:rgba(0,0,0,.45)",
     panel: "position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(94vw,560px);" +
            "max-height:86vh;overflow:auto;padding:16px 18px;border-radius:14px;background:#12161f;border:1px solid #262d3b;" +
@@ -321,8 +329,12 @@
     var btn = el("div", CSS.btn, null);
     btn.id = "__dsh_remote_button";
     btn.title = "dsh-remote · 手机链接";
-    btn.appendChild(el("span", "width:7px;height:7px;border-radius:50%;background:#3ddc84;display:inline-block"));
-    btn.appendChild(el("span", null, "手机链接"));
+    btn.appendChild(el("span", CSS.dot));                      // 8px 状态点，与 EAC 的 .em-dot 同规格同色
+    var label = el("span", CSS.text, "手机链接");               // 11px，与 .em-quickText 同规格同色
+    btn.appendChild(label);
+    // EAC 按钮悬停时描边会变成主题蓝；我们用同样的规则保持一致（内联样式只能用事件模拟 :hover）
+    btn.addEventListener("mouseenter", function () { btn.style.borderColor = CSS.hoverBorder; });
+    btn.addEventListener("mouseleave", function () { btn.style.borderColor = CSS.normalBorder; });
     btn.addEventListener("click", open);
     document.body.appendChild(btn);
     placeAboveEac(btn);
