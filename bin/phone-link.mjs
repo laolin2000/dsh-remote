@@ -5,7 +5,9 @@
 // 形态对齐 ZCode：链接长期有效，**默认只是把它显示出来**，不换链接。
 //   node bin/phone-link.mjs               显示并复制当前主链接（不动它）
 //   node bin/phone-link.mjs --reset       重置：换新链接（旧的立即作废）并显示
-//   node bin/phone-link.mjs --role readonly   显示并复制当前只读链接
+//   node bin/phone-link.mjs --role readonly   显示并复制当前只读链接（同样支持 --reset）
+//   node bin/phone-link.mjs --qr          同时把二维码存成 SVG 并用看图程序打开
+//   node bin/phone-link.mjs --quiet       不弹窗（只打印链接；自测/脚本用）
 // ============================================================================
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -19,6 +21,8 @@ const LAST_FILE = path.join(HOME, "remote", "last-link.txt");
 
 const argv = process.argv.slice(2);
 const reset = argv.includes("--reset");
+const wantQr = argv.includes("--qr");
+const quiet = argv.includes("--quiet") || process.env.DSH_REMOTE_NO_POPUP === "1";
 const role = argv.includes("--role") ? argv[argv.indexOf("--role") + 1] : "owner";
 
 function run(args) {
@@ -41,6 +45,7 @@ function clipboard(text) {
 	});
 }
 function popup(title, message) {
+	if (quiet) { console.log(`[${title}]\n${message}\n`); return; }
 	const t = title.replace(/'/g, "''"), m = message.replace(/'/g, "''");
 	spawn("powershell.exe", ["-NoProfile", "-WindowStyle", "Hidden", "-Command",
 		`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('${m}','${t}') | Out-Null`],
@@ -49,7 +54,7 @@ function popup(title, message) {
 
 // 显示当前链接 = guard pair --role X（不带 --reset 就不会换）；要重置才加 --reset
 const args = ["pair", "--role", role === "readonly" ? "readonly" : "owner"];
-if (reset && role !== "readonly") args.push("--reset");
+if (reset) args.push("--reset");     // 只读链接同样支持重置（之前这里被静默忽略）
 const { code, out } = await run(args);
 const url = (out.match(/https?:\/\/\S+\?t=[A-Za-z0-9_-]+/g) || []).pop() || "";
 
@@ -63,6 +68,23 @@ try {
 	fs.writeFileSync(LAST_FILE, url + "\n", "utf8");
 } catch { /* 写不进去不影响主流程 */ }
 
+// --qr：把二维码存成 SVG 并用默认看图程序打开（手机相机扫屏幕上的码即可，不用输链接）
+let qrNote = "";
+if (wantQr) {
+	try {
+		const { out: svg } = await run(["qr", "--svg", "--role", role === "readonly" ? "readonly" : "owner"]);
+		const svgText = svg.slice(svg.indexOf("<svg")).trim();
+		if (svgText.startsWith("<svg")) {
+			const svgFile = path.join(path.dirname(LAST_FILE), "last-qr.svg");
+			fs.writeFileSync(svgFile, svgText, "utf8");
+			if (!quiet) spawn("cmd.exe", ["/c", "start", "", svgFile], { windowsHide: true, detached: true }).unref();
+			qrNote = "\n\n二维码已" + (quiet ? "写入" : "用看图程序打开") + "（" + svgFile + "）：手机相机对准屏幕上的码即可进入。";
+		} else {
+			qrNote = "\n\n（二维码生成失败，可用终端命令：node guard/guard.mjs qr）";
+		}
+	} catch { qrNote = "\n\n（二维码生成失败，可用终端命令：node guard/guard.mjs qr）"; }
+}
+
 const copied = await clipboard(url);
 const roleText = role === "readonly" ? "只读（能看会话与图片，写入被拦）" : "主设备（可发指令 / 看图 / 审批）";
 popup(
@@ -71,6 +93,7 @@ popup(
 	(copied ? "已复制到剪贴板。" : "（复制剪贴板失败，请手动选中上面的链接）") +
 	(reset
 		? "\n\n旧链接已作废：需要在手机上重新打开这条新链接。"
-		: "\n\n链接长期有效，改之前一直是这一条。要换新的请用桌面上的「重置」图标。")
+		: "\n\n链接长期有效，改之前一直是这一条。要换新的请用桌面上的「重置」图标。") +
+	qrNote
 );
 console.log(url);

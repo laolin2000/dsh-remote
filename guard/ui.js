@@ -15,7 +15,7 @@
   if (window.__dshRemoteUi) return;
   window.__dshRemoteUi = true;
 
-  var API = { status: "/__guard/status", links: "/__guard/links", link: "/__guard/link", devices: "/__guard/devices", revoke: "/__guard/revoke" };
+  var API = { status: "/__guard/status", links: "/__guard/links", link: "/__guard/link", devices: "/__guard/devices", revoke: "/__guard/revoke", reset: "/__guard/reset", qr: "/__guard/qr" };
 
   function el(tag, css, text) {
     var e = document.createElement(tag);
@@ -128,12 +128,19 @@
 
     var btns = el("div", CSS.row);
     var copyBtn = el("button", CSS.b, "复制");
+    var qrBtn = el("button", CSS.g, "二维码");
     var roBtn = el("button", CSS.g, "只读");
     var resetBtn = el("button", CSS.warn, "重置");
     btns.appendChild(copyBtn);
+    btns.appendChild(qrBtn);
     btns.appendChild(roBtn);
     btns.appendChild(resetBtn);
     card.appendChild(btns);
+
+    // 二维码：在电脑屏幕上显示，手机相机扫一下就进 DSH（省去复制粘贴）
+    var qrWrap = el("div", null, "");
+    qrWrap.setAttribute("style", "display:none;margin-top:8px;text-align:center");
+    card.appendChild(qrWrap);
 
     var roWrap = el("div", null, "");
     roWrap.setAttribute("style", "display:none");
@@ -191,21 +198,43 @@
 
     copyBtn.addEventListener("click", function () { doCopy(state.owner, copyBtn, "主链接"); });
     roCopy.addEventListener("click", function () { doCopy(state.readonly, roCopy, "只读链接"); });
+    qrBtn.addEventListener("click", function () {
+      var hidden = qrWrap.getAttribute("style").indexOf("none") >= 0;
+      if (!hidden) { qrWrap.setAttribute("style", "display:none"); qrBtn.textContent = "二维码"; return; }
+      qrWrap.setAttribute("style", "display:block;margin-top:8px;text-align:center");
+      qrWrap.textContent = "正在生成…";
+      qrBtn.textContent = "收起二维码";
+      // 守卫给的是 SVG（矢量，缩放不糊），直接内联；失败要说清楚原因，别只显示空白
+      fetch(API.qr + "?role=owner", { headers: { accept: "image/svg+xml" }, cache: "no-store" })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+        .then(function (svg) {
+          qrWrap.innerHTML = svg.replace("<svg ", '<svg style="width:min(70vw,240px);height:auto;background:#fff;border-radius:8px;padding:6px" ');
+          var tip = el("div", CSS.sub, "手机相机对准这张码 → 直接进入 DSH（链接长期有效）");
+          qrWrap.appendChild(tip);
+          say("二维码已生成 · " + nowText(), CSS.ok);
+        })
+        .catch(function (e) { qrWrap.textContent = ""; qrWrap.appendChild(el("div", CSS.bad, "二维码生成失败：" + e.message)); });
+    });
     roBtn.addEventListener("click", function () {
-      var shown = roWrap.getAttribute("style").indexOf("none") < 0;
-      roWrap.setAttribute("style", shown && !state.readonly ? "display:none" : "display:block;margin-top:6px;padding-top:8px;border-top:1px solid #1e2532");
+      // 单纯的开/关切换：第一次点开并复制，再点收起（之前的写法一旦打开就再也收不起来）
+      var open = roWrap.getAttribute("style").indexOf("none") < 0;
+      if (open) { roWrap.setAttribute("style", "display:none"); roBtn.textContent = "只读"; return; }
+      roWrap.setAttribute("style", "display:block;margin-top:6px;padding-top:8px;border-top:1px solid #1e2532");
+      roBtn.textContent = "收起只读";
       if (!state.readonly) { say("还没取到只读链接", CSS.bad); return; }
-      if (!shown) { roBox.textContent = state.readonly; doCopy(state.readonly, roBtn, "只读链接"); }
+      roBox.textContent = state.readonly;
+      doCopy(state.readonly, roCopy, "只读链接");
     });
 
     resetBtn.addEventListener("click", function () {
       if (!confirm("重置链接？\n\n当前链接会立即作废（已配对设备不受影响），需要把新链接重新发到手机。")) return;
       say("正在重置…", CSS.mut);
-      jget(API.link + "?reset=1").then(function (r) {
+      jpost(API.reset, {}).then(function (r) {
         if (!r || !r.ok) { say("重置失败（需要 owner 权限）", CSS.bad); return; }
         loadLinks();
+        var url = (r.owner && r.owner.url) || "";
         var original = resetBtn.textContent;
-        copyText(r.url).then(function (ok) {
+        copyText(url).then(function (ok) {
           resetBtn.textContent = ok ? "已重置并复制 ✓" : "已重置";
           setTimeout(function () { resetBtn.textContent = original; }, 2500);
           say(ok ? "已重置，新链接已复制 · " + nowText() : "已重置，自动复制失败——请点链接框手动选中", ok ? CSS.ok : CSS.bad);

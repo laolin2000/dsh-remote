@@ -1,7 +1,7 @@
 {
   "name": "dsh-remote",
-  "version": "0.1.0",
-  "description": "Device-authenticated remote access layer for DeepSeek Harness (DSH): pairing codes, per-device roles, server-side read-only enforcement, and tunnel supervision.",
+  "version": "0.2.0",
+  "description": "Device-authenticated remote access layer for DeepSeek Harness (DSH): pairing, per-device roles, server-side read-only enforcement, long-lived token links, QR entry, and tunnel supervision.",
   "type": "module",
   "license": "MIT",
   "private": false,
@@ -14,8 +14,15 @@
   "scripts": {
     "serve": "node guard/guard.mjs serve",
     "pair": "node guard/guard.mjs pair",
+    "qr": "node guard/guard.mjs qr",
     "status": "node guard/guard.mjs status",
-    "test": "node test/selftest.mjs"
+    "test": "node test/selftest.mjs && node test/qr.test.mjs && node test/plugin.test.mjs && node test/bin.test.mjs",
+    "test:guard": "node test/selftest.mjs",
+    "test:qr": "node test/qr.test.mjs",
+    "test:plugin": "node test/plugin.test.mjs",
+    "test:bin": "node test/bin.test.mjs",
+    "test:panel": "node test/panel.dom.mjs",
+    "test:tunnel": "node test/tunnel.test.mjs"
   },
   "files": [
     "guard/",
@@ -33,6 +40,7 @@
     "remote-access",
     "reverse-proxy",
     "device-pairing",
-    "cloudflared"
+    "cloudflared",
+    "qrcode"
   ]
 }

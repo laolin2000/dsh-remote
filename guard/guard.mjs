@@ -35,6 +35,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { encode as qrEncode, matrixToSvg, matrixToAscii } from "./qr.mjs";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.DSH_HOME || path.join(os.homedir(), ".dsh");
@@ -89,11 +90,16 @@ const READONLY_ALLOWED_UPGRADE = new Set(["/api/events.mux", "/api/events.host"]
 const HOP_BY_HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"]);
 
 // ---------------------------------------------------------------- 日志与状态
+// 常驻服务不能因为"日志往哪写"而死：stdout 是管道时，启动它的父进程一退出就会 EPIPE。
+// 踩过的坑（实测）：`log()` 直接 write stdout 抛 EPIPE → uncaughtException → 处理器里又调 log()
+// → 再抛 EPIPE → 进程退出。表现是"守卫莫名消失、公网入口跟着断"。
+process.stdout.on("error", () => {});
+process.stderr.on("error", () => {});
 function log(line) {
 	const stamp = new Date().toISOString();
 	const text = `[guard ${stamp}] ${line}`;
 	try { fs.appendFileSync(LOG_FILE, text + "\n"); } catch { /* 只读目录时忽略 */ }
-	if (cmd === "serve") process.stdout.write(text + "\n");
+	if (cmd === "serve") { try { process.stdout.write(text + "\n"); } catch { /* 管道断了就当写日志失败 */ } }
 }
 function audit(entry) {
 	if (!conf.audit) return;
@@ -451,8 +457,8 @@ async function serveGuardEndpoint(req, res, urlPath) {
 		return true;
 	}
 
-	// 以下端点都只给 owner：生成链接 / 设备列表 / 吊销
-	const ownerOnly = urlPath === "/__guard/link" || urlPath === "/__guard/links" || urlPath === "/__guard/devices" || urlPath === "/__guard/revoke";
+	// 以下端点都只给 owner：生成链接 / 设备列表 / 吊销 / 重置 / 二维码
+	const ownerOnly = urlPath === "/__guard/link" || urlPath === "/__guard/links" || urlPath === "/__guard/devices" || urlPath === "/__guard/revoke" || urlPath === "/__guard/reset" || urlPath === "/__guard/qr";
 	if (ownerOnly) {
 		const auth = resolveDevice(req) || (isLocalTrusted(req) ? { device: { name: "本机(直连)", role: "owner" } } : null);
 		if (!auth || auth.device.role !== "owner") {
@@ -473,6 +479,28 @@ async function serveGuardEndpoint(req, res, urlPath) {
 			send(res, 200, "application/json; charset=utf-8", JSON.stringify({
 				ok: true, owner: currentLink("owner", {}), readonly: currentLink("readonly", {})
 			}));
+			return true;
+		}
+		if (urlPath === "/__guard/reset" && req.method === "POST") {
+			// 面板插件（走插件路由或直连守卫）用的重置：与 `pair --reset` 同一语义。
+			// 之前只提供 GET /__guard/link?reset=1，跨源 POST 的兜底路径没有对应端点是错的。
+			currentLink("owner", { reset: true });
+			audit({ event: "reset-link", device: auth.device.name, via: "guard-reset" });
+			send(res, 200, "application/json; charset=utf-8", JSON.stringify({
+				ok: true, owner: currentLink("owner", {}), readonly: currentLink("readonly", {})
+			}));
+			return true;
+		}
+		if (urlPath === "/__guard/qr") {                        // 手机二维码（SVG，扫码即进）
+			const q = new URLSearchParams((req.url || "").split("?")[1] || "");
+			const role = q.get("role") === "readonly" ? "readonly" : "owner";
+			const link = currentLink(role, {});
+			try {
+				const svg = matrixToSvg(qrEncode(link.url, { ecc: "M" }), { scale: Math.min(16, Math.max(2, Number(q.get("scale")) || 8)) });
+				send(res, 200, "image/svg+xml; charset=utf-8", svg);
+			} catch (e) {
+				send(res, 500, "application/json; charset=utf-8", JSON.stringify({ ok: false, error: `生成二维码失败：${e.message}` }));
+			}
 			return true;
 		}
 		if (urlPath === "/__guard/devices") {
@@ -661,9 +689,12 @@ function withLocalCors(req, res) {
 	};
 	const writeHead = res.writeHead.bind(res);
 	res.writeHead = function (code, a, b) {
-		if (typeof a === "object" && a !== null) return writeHead(code, { ...a, ...cors });
-		if (typeof b === "object" && b !== null) return writeHead(code, a, { ...b, ...cors });
-		return writeHead(code, a, b);
+		if (a && typeof a === "object") return writeHead(code, { ...a, ...cors });
+		if (b && typeof b === "object") return writeHead(code, a, { ...b, ...cors });
+		// 无 headers 的调用（例如 OPTIONS 的 204）也必须带上 CORS 头，
+		// 否则浏览器预检失败 → 页面里的跨源 POST（重置/吊销的兜底路径）会被拦下。
+		if (a === undefined) return writeHead(code, { ...cors });
+		return writeHead(code, a, { ...cors });
 	};
 }
 
@@ -763,12 +794,27 @@ function findCloudflared() {
 	}
 	return null;
 }
+let lastTunnelError = "";
 function startTunnel() {
 	const bin = findCloudflared();
 	if (!bin) { log("找不到 cloudflared：请用 --cloudflared 指定路径，或把 cloudflared 放进 PATH"); return null; }
+	if (/\.(cmd|bat)$/i.test(bin)) {
+		// Node 20+ 出于安全不再直接 spawn .cmd/.bat（报 spawn EINVAL），
+		// 而很多人会给 cloudflared 套一层批处理包装 —— 明确告诉他原因，别让他对着"等待域名超时"发呆。
+		lastTunnelError = `cloudflared 不能是 .cmd/.bat 包装脚本（Node 会拒绝执行）：${bin}。请指向 cloudflared.exe 本体。`;
+		log(lastTunnelError);
+		return null;
+	}
+	lastTunnelError = "";
 	try { fs.rmSync(conf.tunnelLog, { force: true }); } catch {}
 	try { fs.rmSync(conf.urlFile, { force: true }); } catch {}
 	const child = spawn(bin, ["tunnel", "--no-autoupdate", "--url", `http://127.0.0.1:${conf.port}`, "--logfile", conf.tunnelLog, "--loglevel", "info"], { detached: true, stdio: "ignore", windowsHide: true });
+	// spawn 失败是异步的：不接住就会变成一条 unhandledRejection，用户只看到"等待域名超时"
+	child.on("error", (e) => {
+		lastTunnelError = `拉起 cloudflared 失败：${e.message}（${bin}）`;
+		log(lastTunnelError);
+		saveTunnelState({ pid: null, url: null, startedAt: null, restarts: tunnelState().restarts || 0 });
+	});
 	child.unref();
 	saveTunnelState({ pid: child.pid, url: null, startedAt: new Date().toISOString(), restarts: (tunnelState().restarts || 0) });
 	log(`已拉起 cloudflared（PID ${child.pid}）→ http://127.0.0.1:${conf.port}`);
@@ -786,6 +832,7 @@ function readTunnelUrl() {
 }
 async function waitTunnelUrl(seconds = 60) {
 	for (let i = 0; i < seconds; i++) {
+		if (lastTunnelError) return null;         // 起不来就别再等满 60 秒
 		const url = readTunnelUrl();
 		if (url) {
 			const state = tunnelState();
@@ -802,7 +849,11 @@ function stopTunnel() {
 	if (alive(state.pid)) { try { process.kill(state.pid); log(`已停止 cloudflared（PID ${state.pid}）`); } catch {} }
 	saveTunnelState({ pid: null, url: null, startedAt: null, restarts: state.restarts || 0 });
 }
-/** 隧道守护：进程没了就按退避重启 —— 「稳定连接」的服务端一半。 */
+/** 隧道守护：进程没了就按退避重启 —— 「稳定连接」的服务端一半。
+ *  语义：`superviseTunnel` 表达的是「想要公网入口」这个意图。
+ *    · true（默认）= 开机/重启 DSH 后自动把入口拉回来；进程掉了自动重启；
+ *    · false = `tunnel down` 明确关掉，守护不再自动拉起。
+ *  （踩过的坑：`tunnel down` 只杀进程、不关意图 → 10 秒后守护又把它拉回来了。） */
 let tunnelBackoff = 2000;
 function superviseTunnel() {
 	if (!conf.superviseTunnel) return;
@@ -837,10 +888,11 @@ function entryUrl() {
 	return `http://${conf.bind}:${conf.port}`;
 }
 
-/** 显示当前链接（默认）；`--reset` 才换新的。
+/** 显示当前链接（默认）；`--reset` 才换新的；`--qr` 直接打一张可扫的二维码。
  *  形态对齐 ZCode：链接长期有效，改之前一直是这一条。 */
 function cliPair() {
 	const reset = argv.includes("--reset");
+	const wantQr = argv.includes("--qr");
 	const roleFlag = flag("role", "");
 	const name = flag("name", "");
 	if (reset) {
@@ -859,6 +911,7 @@ function cliPair() {
 		console.log(fmt(l));
 		console.log("");
 		console.log(` 创建于 ${l.createdAt}${reset ? "　（本次 --reset：旧链接已作废）" : ""}`);
+		if (wantQr) console.log("\n" + matrixToAscii(qrEncode(l.url, { ecc: "M" })) + "\n  ↑ 用手机相机扫这张码即进入 DSH");
 		console.log("==========================================================");
 		console.log(roleFlag === "readonly" ? ro.url : owner.url);
 		return;
@@ -874,10 +927,22 @@ function cliPair() {
 	console.log(fmt(ro));
 	console.log("");
 	console.log(` 主链接创建于 ${owner.createdAt}　只读链接创建于 ${ro.createdAt}`);
+	if (wantQr) console.log("\n" + matrixToAscii(qrEncode(owner.url, { ecc: "M" })) + "\n  ↑ 主链接的二维码：手机相机直接扫");
 	console.log(" 手机点开即自动配对并进入 DSH；token 换完 cookie 后从地址栏消失。");
 	console.log(" 要换新链接：node guard.mjs pair --reset（或面板里的「重置链接」）");
 	console.log(" 要临时给一台设备一次性凭据：node guard.mjs pair --code");
 	console.log("==========================================================");
+}
+
+/** 只输出二维码：--svg 给网页/图片用（默认 SVG），不带则打终端字符画。 */
+function cliQr() {
+	const role = flag("role", "owner") === "readonly" ? "readonly" : "owner";
+	const link = currentLink(role, {});
+	const qr = qrEncode(link.url, { ecc: "M" });
+	if (argv.includes("--svg")) { process.stdout.write(matrixToSvg(qr, { scale: 8 })); return; }
+	console.log(`（${role === "readonly" ? "只读" : "主设备"}链接 · ${link.url}）`);
+	console.log(matrixToAscii(qr));
+	console.log("用手机相机扫这张码即自动配对进入 DSH。要存成图片：node guard.mjs qr --svg > qr.svg");
 }
 
 /** 旧的一次性配对码（临时给某台设备用；长期链接之外的备用通道）。 */
@@ -926,6 +991,7 @@ async function cliStatus() {
 
 // ---------------------------------------------------------------- 主流程
 if (cmd === "pair" || cmd === "link") { (argv.includes("--code") ? cliCode : cliPair)(); process.exit(0); }
+if (cmd === "qr") { cliQr(); process.exit(0); }
 if (cmd === "devices") { cliDevices(); process.exit(0); }
 if (cmd === "revoke") { cliRevoke(argv[1]); process.exit(0); }
 if (cmd === "print") { console.log(JSON.stringify(conf, null, 2)); process.exit(0); }
@@ -936,12 +1002,20 @@ if (cmd === "tunnel") {
 		conf.superviseTunnel = true;
 		saveConf();
 		const pid = startTunnel();
-		if (!pid) process.exit(1);
+		if (!pid) { console.log(lastTunnelError || "已经找不到 cloudflared 了，请用 --cloudflared 指定路径"); process.exit(1); }
 		const url = await waitTunnelUrl(60);
+		if (!url && lastTunnelError) { console.log(lastTunnelError); process.exit(1); }
 		console.log(url ? `公网入口： ${url}/` : "等待域名超时，请查看 " + conf.tunnelLog);
 		process.exit(url ? 0 : 1);
 	}
-	if (sub === "down") { stopTunnel(); console.log("隧道已停止"); process.exit(0); }
+	if (sub === "down") {
+		// 必须把「想要隧道」这个意图也关掉：否则守护进程每 10 秒会把它拉回来（实测：12 秒后复活）。
+		conf.superviseTunnel = false;
+		saveConf();
+		stopTunnel();
+		console.log("隧道已停止（守护进程不会再自动拉起；重新开启：guard.mjs tunnel up）");
+		process.exit(0);
+	}
 	const state = tunnelState();
 	console.log(JSON.stringify({ ...state, alive: alive(state.pid), desired: conf.superviseTunnel }, null, 2));
 	process.exit(0);
@@ -954,5 +1028,6 @@ server.listen(conf.port, conf.bind, () => {
 	if (!conf.devices.length) log("还没有授权设备：运行 `node guard.mjs pair` 生成配对码");
 });
 setInterval(superviseTunnel, 10_000);
-process.on("uncaughtException", (e) => log(`uncaughtException: ${e?.stack || e}`));
-process.on("unhandledRejection", (r) => log(`unhandledRejection: ${r}`));
+// 兜底：任何未捕获异常都只记录下来，不让守卫退出（它是常驻服务，退出等于公网入口断掉）
+process.on("uncaughtException", (e) => { try { log(`uncaughtException: ${e?.stack || e}`); } catch {} });
+process.on("unhandledRejection", (r) => { try { log(`unhandledRejection: ${r}`); } catch {} });

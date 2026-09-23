@@ -67,13 +67,21 @@ coupling to DSH's layout.
 | `GET /dsh-remote/status` | guard status: entry, tunnel, devices, pending links, active sessions |
 | `GET /dsh-remote/links` | read the two current long-lived links (mutates nothing) |
 | `POST /dsh-remote/reset` | rotate the links (old ones die immediately) |
+| `GET /dsh-remote/qr[?role=readonly]` | QR code (SVG) for the current link — point a phone camera at it |
 | `GET /dsh-remote/link[?role=readonly][&reset=1]` | single link / rotate (legacy-compatible) |
 | `GET /dsh-remote/devices` | device list |
 | `POST /dsh-remote/revoke` | revoke a device |
 
+`reset` and `qr` **really invoke the guard CLI** (`pair --reset` / `qr --svg`) from the plugin's server half; the
+other endpoints read the guard's state files (`guard.json` / `tunnel.json` / `urlFile`) instead of parsing CLI output.
+
 **Admission**: requests coming through the guard must carry `x-dsh-remote-role: owner`; direct loopback requests
 must have a loopback `Host`. The guard also marks `/dsh-remote/*` owner-only — two gates, so a read-only device
 can't mint itself an owner link.
+
+**Fallback**: when the plugin's server half is an older build (new routes 404) or `guardPath` isn't configured, the
+client talks to the local guard directly (`http://127.0.0.1:8443/__guard/*`, which the guard trusts as loopback) and
+says so in the status line. Copy / QR / reset / revoke keep working even with a stale plugin.
 
 ## License
 

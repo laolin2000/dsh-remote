@@ -65,12 +65,20 @@ window.__ModuleLoader__.load({
 | `GET /dsh-remote/status` | 守卫状态：入口、隧道、设备、待用链接、活跃会话 |
 | `GET /dsh-remote/links` | 读取当前两条长期链接（不改动） |
 | `POST /dsh-remote/reset` | 重置链接（旧的立即作废） |
+| `GET /dsh-remote/qr[?role=readonly]` | 当前链接的二维码（SVG，手机相机直接扫） |
 | `GET /dsh-remote/link[?role=readonly][&reset=1]` | 单条链接 / 重置（兼容） |
 | `GET /dsh-remote/devices` | 设备列表 |
 | `POST /dsh-remote/revoke` | 吊销设备 |
 
+`reset` 与 `qr` 由插件的服务端半边**真调守卫 CLI**（`pair --reset` / `qr --svg`）实现；
+其余接口直接读守卫的状态文件（`guard.json` / `tunnel.json` / `urlFile`），不解析 CLI 输出。
+
 **准入**：经守卫来的请求必须带 `x-dsh-remote-role: owner`；本机直连要求 `Host` 是回环。
 守卫侧也把 `/dsh-remote/*` 列为 owner-only —— 两道闸，防止只读设备给自己签 owner 链接。
+
+**兜底**：插件服务端半边是旧版（新路由 404）或没配 `guardPath` 时，客户端会直连本机守卫
+（`http://127.0.0.1:8443/__guard/*`，本机直连被守卫视为可信），并在状态行标注「已直连守卫」。
+所以即使插件没更新，面板里的复制/二维码/重置/吊销依然可用。
 
 ## 许可
 

@@ -87,6 +87,8 @@ window.__ModuleLoader__.load({
 			"/dsh-remote/links": "/__guard/links",
 			"/dsh-remote/devices": "/__guard/devices",
 			"/dsh-remote/link": "/__guard/link",
+			"/dsh-remote/reset": "/__guard/reset",
+			"/dsh-remote/qr": "/__guard/qr",
 			"/dsh-remote/revoke": "/__guard/revoke"
 		};
 		let usedFallback = false;
@@ -156,12 +158,19 @@ window.__ModuleLoader__.load({
 
 			const btns = el("div", CSS.row);
 			const copyBtn = el("button", CSS.b, "复制");
+			const qrBtn = el("button", CSS.g, "二维码");
 			const roBtn = el("button", CSS.g, "只读");
 			const resetBtn = el("button", CSS.warn, "重置");
 			btns.appendChild(copyBtn);
+			btns.appendChild(qrBtn);
 			btns.appendChild(roBtn);
 			btns.appendChild(resetBtn);
 			card.appendChild(btns);
+
+			// 二维码：电脑屏幕上显示，手机相机扫一下即进（省去复制粘贴）
+			const qrWrap = el("div", null, "");
+			qrWrap.setAttribute("style", "display:none;margin-top:8px;text-align:center");
+			card.appendChild(qrWrap);
 
 			const roWrap = el("div", null, "");
 			roWrap.setAttribute("style", "display:none");
@@ -212,11 +221,34 @@ window.__ModuleLoader__.load({
 
 			copyBtn.addEventListener("click", () => doCopy(state.owner, copyBtn, "主链接"));
 			roCopy.addEventListener("click", () => doCopy(state.readonly, roCopy, "只读链接"));
+			qrBtn.addEventListener("click", () => {
+				const hidden = qrWrap.getAttribute("style").indexOf("none") >= 0;
+				if (!hidden) { qrWrap.setAttribute("style", "display:none"); qrBtn.textContent = "二维码"; return; }
+				qrWrap.setAttribute("style", "display:block;margin-top:8px;text-align:center");
+				qrWrap.textContent = "正在生成…";
+				qrBtn.textContent = "收起二维码";
+				const mapped = FALLBACK_MAP["/dsh-remote/qr"];
+				fetch("/dsh-remote/qr?role=owner", { headers: { accept: "image/svg+xml" }, cache: "no-store" })
+					.then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+					.catch(() => fetch(GUARD_BASE + mapped + "?role=owner", { credentials: "include", cache: "no-store" })
+						.then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); usedFallback = true; return r.text(); }))
+					.then((svg) => {
+						if (!svg || svg.trim().startsWith("{")) throw new Error("守卫没有返回二维码");
+						qrWrap.innerHTML = svg.replace("<svg ", '<svg style="width:min(70vw,240px);height:auto;background:#fff;border-radius:8px;padding:6px" ');
+						qrWrap.appendChild(el("div", CSS.sub, "手机相机对准这张码 → 直接进入 DSH（链接长期有效）"));
+						say("二维码已生成 · " + nowText() + (usedFallback ? "（插件路由不可用，已直连守卫）" : ""), CSS.ok);
+					})
+					.catch((e) => { qrWrap.textContent = ""; qrWrap.appendChild(el("div", CSS.bad, "二维码生成失败：" + e.message)); });
+			});
 			roBtn.addEventListener("click", () => {
-				const shown = roWrap.getAttribute("style").indexOf("none") < 0;
-				roWrap.setAttribute("style", shown && !state.readonly ? "display:none" : "display:block;margin-top:6px;padding-top:8px;border-top:1px solid #1e2532");
+				// 单纯的开/关切换（之前的写法一旦打开就再也收不起来）
+				const open = roWrap.getAttribute("style").indexOf("none") < 0;
+				if (open) { roWrap.setAttribute("style", "display:none"); roBtn.textContent = "只读"; return; }
+				roWrap.setAttribute("style", "display:block;margin-top:6px;padding-top:8px;border-top:1px solid #1e2532");
+				roBtn.textContent = "收起只读";
 				if (!state.readonly) { say("还没取到只读链接", CSS.bad); return; }
-				if (!shown) { roBox.textContent = state.readonly; doCopy(state.readonly, roBtn, "只读链接"); }
+				roBox.textContent = state.readonly;
+				doCopy(state.readonly, roCopy, "只读链接");
 			});
 
 			resetBtn.addEventListener("click", () => {

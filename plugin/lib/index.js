@@ -161,6 +161,22 @@ export function apply(ctx, config) {
 				return;
 			}
 
+			// 手机二维码（SVG）：面板里点「二维码」时显示，手机相机扫一下即进
+			if (pathname === "/dsh-remote/qr" && method === "GET") {
+				const q = new URL(req.url || "/", "http://dsh.internal").searchParams;
+				const role = q.get("role") === "readonly" ? "readonly" : "owner";
+				const out = await runGuard(guardPath, ["qr", "--svg", "--role", role]);
+				if (!out.ok || !out.out.includes("<svg")) {
+					json(res, 500, { ok: false, error: out.error || "守卫没有返回二维码", detail: (out.out || "").slice(-300) });
+					return;
+				}
+				const svg = out.out.slice(out.out.indexOf("<svg")).trim();
+				const body = Buffer.from(svg, "utf8");
+				res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "content-length": String(body.length), "cache-control": "no-store" });
+				res.end(body);
+				return;
+			}
+
 			if (pathname === "/dsh-remote/revoke" && method === "POST") {
 				const body = await readBody(req);
 				const id = body && typeof body.id === "string" ? body.id : "";

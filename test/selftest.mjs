@@ -249,9 +249,104 @@ console.log("\n=== 9. 本机直连可信 + 公网仍须鉴权（关键区分）=
 	check("公网来源拿不到 CORS 放行", !corsRemote.headers.get("access-control-allow-origin"));
 	const preflight = await call("/__guard/links", { method: "OPTIONS", headers: { origin: "http://127.0.0.1:50142" } });
 	check("OPTIONS 预检 → 204", preflight.status === 204, "实际 " + preflight.status);
+	// 预检响应也必须带 CORS 头，否则浏览器会拦下页面里的跨源 POST（重置/吊销的兜底路径）
+	check("预检 204 带 Access-Control-Allow-Origin", preflight.headers.get("access-control-allow-origin") === "http://127.0.0.1:50142", JSON.stringify(preflight.headers.get("access-control-allow-origin")));
+	check("预检 204 允许 POST 方法", (preflight.headers.get("access-control-allow-methods") || "").includes("POST"), String(preflight.headers.get("access-control-allow-methods")));
+	check("预检 204 允许 content-type 头", (preflight.headers.get("access-control-allow-headers") || "").includes("content-type"), String(preflight.headers.get("access-control-allow-headers")));
+	check("预检 204 带 allow-credentials（否则带 cookie 的跨源请求会被拦）", preflight.headers.get("access-control-allow-credentials") === "true", String(preflight.headers.get("access-control-allow-credentials")));
+	const preflightRevoke = await call("/__guard/revoke", { method: "OPTIONS", headers: { origin: "http://127.0.0.1:50142", "access-control-request-method": "POST" } });
+	check("撤销端点的预检同样带 CORS 头", preflightRevoke.headers.get("access-control-allow-origin") === "http://127.0.0.1:50142");
 }
 
-console.log("\n=== 10. 审计日志 ===");
+console.log("\n=== 10. 页面注入：面板脚本 + 启动期外观纠偏 ===");
+{
+	// 外观纠偏读的是 DSH 的 settings.yaml（自测里就在临时目录里造一份）
+	fs.writeFileSync(path.join(TMP, "settings.yaml"), "ui-theme:\n  preference: dark\n  accent: default\n", "utf8");
+	const page = await call("/", { cookie: jar.owner });
+	check("owner 打开页面 → 200", page.status === 200 && page.text.includes("FAKE-DSH-UI"));
+	check("注入了手机链接面板脚本", page.text.includes('<script src="/__guard/ui.js" defer></script>'));
+	check("注入了启动期外观纠偏脚本", page.text.includes('id="__dsh_remote_appearance"'), page.text.slice(0, 120));
+	check("外观纠偏钉住服务端偏好（dark）", page.text.includes('var P="dark"'));
+	check("外观纠偏会在用户动手后停手（不跟用户抢设置）",
+		page.text.includes("pointerdown") && page.text.includes("keydown") && page.text.includes("touchstart"));
+	check("外观纠偏有超时兜底（8 秒）", page.text.includes("8000"));
+	check("纠偏脚本在业务脚本之前（位于 <head> 内）",
+		page.text.indexOf("__dsh_remote_appearance") < page.text.indexOf("FAKE-DSH-UI"));
+
+	const uiJs = await call("/__guard/ui.js", { cookie: jar.owner });
+	check("面板脚本本体可取（/__guard/ui.js → 200 JS）", uiJs.status === 200 && uiJs.headers.get("content-type").includes("javascript"), `${uiJs.status} ${uiJs.headers.get("content-type")}`);
+	check("面板脚本里含只读开关与二维码按钮", uiJs.text.includes("只读") && uiJs.text.includes("二维码"));
+	check("未授权取面板脚本 → 401", (await call("/__guard/ui.js")).status === 401);
+
+	// 关掉注入开关后不应再注入（插件生效后可以这样避免两个按钮）
+	const cfgFile = path.join(TMP, "guard.json");
+	const cfg = JSON.parse(fs.readFileSync(cfgFile, "utf8"));
+	fs.writeFileSync(cfgFile, JSON.stringify({ ...cfg, injectPanel: false }, null, 2));
+	await new Promise((r) => setTimeout(r, 1100));
+	const page2 = await call("/", { cookie: jar.owner });
+	check("injectPanel=false 时不再注入面板脚本", !page2.text.includes("/__guard/ui.js"));
+	fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+	await new Promise((r) => setTimeout(r, 1100));
+	check("恢复 injectPanel 后重新注入", (await call("/", { cookie: jar.owner })).text.includes("/__guard/ui.js"));
+}
+
+console.log("\n=== 11. 二维码端点 ===");
+{
+	const qr = await call("/__guard/qr", { cookie: jar.owner });
+	check("owner 取二维码 → 200 SVG", qr.status === 200 && qr.headers.get("content-type").includes("image/svg+xml"), `实际 ${qr.status} ${qr.headers.get("content-type")}`);
+	check("SVG 结构完整（含静默区与路径）", qr.text.startsWith("<svg") && qr.text.includes("<path d=\"M") && qr.text.includes("viewBox="));
+	const qrRo = await call("/__guard/qr?role=readonly", { cookie: jar.owner });
+	check("只读链接的二维码与主链接不同", qrRo.status === 200 && qrRo.text !== qr.text);
+	const qrScaled = await call("/__guard/qr?scale=3", { cookie: jar.owner });
+	const vb = Number((qrScaled.text.match(/viewBox="0 0 (\d+)/) || [])[1] || 0);
+	const w = Number((qrScaled.text.match(/width="(\d+)"/) || [])[1] || 0);
+	check("二维码尺寸随 scale 变化（宽 = 模块数 × scale）", vb > 0 && w === vb * 3, `viewBox ${vb}, width ${w}`);
+	check("只读设备取二维码 → 403（控制面）", (await call("/__guard/qr", { cookie: jar.readonly })).status === 403);
+	const qrCli = await runCli(["qr", "--role", "owner"]);
+	check("CLI `qr` 输出终端字符画", /[▀▄█]/.test(qrCli), qrCli.slice(0, 60));
+	const qrCliSvg = await runCli(["qr", "--svg"]);
+	check("CLI `qr --svg` 输出 SVG", qrCliSvg.trim().startsWith("<svg"), qrCliSvg.slice(0, 40));
+	const pairQr = await runCli(["pair", "--role", "owner", "--qr"]);
+	check("CLI `pair --qr` 同时给出链接与二维码", /[▀▄█]/.test(pairQr) && /\?t=/.test(pairQr));
+}
+
+console.log("\n=== 11. 重置端点（插件兜底路径用）===");
+{
+	const before = JSON.parse((await call("/__guard/links", { cookie: jar.owner })).text);
+	const r = await call("/__guard/reset", { method: "POST", cookie: jar.owner, body: {} });
+	const j = JSON.parse(r.text);
+	check("POST /__guard/reset → 200", r.status === 200 && j.ok === true, `实际 ${r.status}`);
+	check("重置后主链接换了", j.owner?.url && j.owner.url !== before.owner.url);
+	check("重置后只读链接也换了", j.readonly?.url !== before.readonly.url);
+	const after = JSON.parse((await call("/__guard/links", { cookie: jar.owner })).text);
+	check("重置后的新链接确实生效（再读一致）", after.owner.url === j.owner.url);
+	check("旧链接立即失效 → 401", (await call("/?t=" + before.owner.url.split("t=")[1])).status === 401);
+	check("只读设备调重置 → 403（防提权）", (await call("/__guard/reset", { method: "POST", cookie: jar.readonly, body: {} })).status === 403);
+	check("重置不会踢掉已配对设备", (await call("/api/session.list", { method: "POST", cookie: jar.owner, body: {} })).status === 200);
+}
+
+console.log("\n=== 12. 隧道意图（down 之后守护不该把它拉回来）===");
+{
+	const cfgFile = path.join(TMP, "guard.json");
+	const readCfg = () => JSON.parse(fs.readFileSync(cfgFile, "utf8"));
+	check("初始 superviseTunnel=false（自测默认不起隧道）", readCfg().superviseTunnel === false);
+	await runCli(["tunnel", "down"]);
+	check("`tunnel down` 把意图也关掉（superviseTunnel=false）", readCfg().superviseTunnel === false);
+	const st = JSON.parse(await runCli(["tunnel", "status"]));
+	check("`tunnel status` 报 desired=false 且 not alive", st.desired === false && st.alive === false, JSON.stringify(st));
+	// 用一个不存在的隧道二进制：up 必须明确报错，而不是"等待域名超时"（曾经的坑：spawn 失败被吞成 unhandledRejection）
+	const bad = path.join(TMP, "no-such-cloudflared.exe");
+	const cfg = readCfg();
+	cfg.cloudflared = bad;
+	fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+	await new Promise((r) => setTimeout(r, 1200));       // 让服务按 mtime 重载
+	const up = await runCli(["tunnel", "up"]);
+	check("`tunnel up` 用不存在的二进制 → 明确报错退出", /找不到|失败|不能是/.test(up), up.slice(0, 120));
+	await runCli(["tunnel", "down"]);                    // 收尾：确保保持关闭
+	check("收尾后仍是关闭状态", readCfg().superviseTunnel === false);
+}
+
+console.log("\n=== 13. 审计日志 ===");
 {
 	const auditFile = path.join(TMP, "audit.jsonl");
 	const lines = fs.existsSync(auditFile) ? fs.readFileSync(auditFile, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
