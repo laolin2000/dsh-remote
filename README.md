@@ -51,16 +51,16 @@
 前置：**Node ≥ 20**；DSH 装好并**至少启动过一次**（profile 目录 `~/.dsh/profiles/web-desktop` 存在）。
 
 ```bash
-# 1) 取代码（国内直连 github.com 常不通：走代理或下 ZIP 都行）
-git clone https://github.com/laolin2000/dsh-remote.git
-#   git -c http.proxy=http://127.0.0.1:7897 clone https://github.com/laolin2000/dsh-remote.git
-
-# 2) 一条命令装好并跑起来
-cd dsh-remote
-node bin/setup.mjs            # 等价于 npm run setup；不想全自动可加 --no-tunnel / --no-guard / --dry-run
+# 1)+2) 取代码并一条命令装好（注意：必须在仓库目录里运行；下面这条是完整可粘的一行）
+git -c http.proxy=http://127.0.0.1:7897 clone https://github.com/laolin2000/dsh-remote.git && cd dsh-remote && node bin/setup.mjs
+#   不想全自动可加 --no-tunnel / --no-guard / --dry-run；等价脚本：npm run setup
 
 # 3) 重启一次 DSH（插件树不热重载）→ 右下角、EAC监控按钮上方出现「手机链接」
 ```
+
+> 已经在别的目录里？用**绝对路径**跑即可（脚本按自身位置定位仓库，与当前目录无关）：
+> `node "C:\Users\<你>\dsh-remote\bin\setup.mjs"`
+> 若报 `Cannot find module .../bin/setup.mjs`，就是当前目录不在仓库里（请先 cd 进仓库，或用绝对路径）。
 
 `setup.mjs` 一次做完这些事（幂等，可反复运行）：
 

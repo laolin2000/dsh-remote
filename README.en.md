@@ -56,17 +56,17 @@ Prerequisites: **Node ≥ 20**; DSH installed and **started at least once** (so 
 `~/.dsh/profiles/web-desktop` exists).
 
 ```bash
-# 1) get the code (github.com is often unreachable directly from CN: use a proxy or the ZIP download)
-git clone https://github.com/laolin2000/dsh-remote.git
-#   git -c http.proxy=http://127.0.0.1:7897 clone https://github.com/laolin2000/dsh-remote.git
-
-# 2) one command installs everything and starts it
-cd dsh-remote
-node bin/setup.mjs            # same as npm run setup; --no-tunnel / --no-guard / --dry-run to narrow it
+# 1)+2) clone and install in one line (run it from inside the repo directory)
+git -c http.proxy=http://127.0.0.1:7897 clone https://github.com/laolin2000/dsh-remote.git && cd dsh-remote && node bin/setup.mjs
+#   narrow it with --no-tunnel / --no-guard / --dry-run; equivalent script: npm run setup
 
 # 3) restart DSH once (the plugin tree is not hot-reloaded) -> the "手机链接" button appears,
 #    bottom-right, directly above the EAC monitor button
 ```
+
+> Already somewhere else? Run it by **absolute path** — the script locates the repo from its own location,
+> not from your cwd: `node "C:\Users\<you>\dsh-remote\bin\setup.mjs"`.
+> `Cannot find module .../bin/setup.mjs` means your current directory is not the repo.
 
 What `setup.mjs` does in one go (idempotent, safe to re-run):
 
