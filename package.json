@@ -16,7 +16,7 @@
     "pair": "node guard/guard.mjs pair",
     "qr": "node guard/guard.mjs qr",
     "status": "node guard/guard.mjs status",
-    "test": "node test/selftest.mjs && node test/qr.test.mjs && node test/plugin.test.mjs && node test/bin.test.mjs && node test/install.test.mjs",
+    "test": "node test/selftest.mjs && node test/qr.test.mjs && node test/plugin.test.mjs && node test/bin.test.mjs && node test/install.test.mjs && node test/setup.test.mjs",
     "test:guard": "node test/selftest.mjs",
     "test:qr": "node test/qr.test.mjs",
     "test:plugin": "node test/plugin.test.mjs",
@@ -25,7 +25,9 @@
     "test:tunnel": "node test/tunnel.test.mjs",
     "install-plugin": "node bin/install-plugin.mjs",
     "uninstall-plugin": "node bin/install-plugin.mjs --uninstall",
-    "test:install": "node test/install.test.mjs"
+    "test:install": "node test/install.test.mjs",
+    "setup": "node bin/setup.mjs",
+    "test:setup": "node test/setup.test.mjs"
   },
   "files": [
     "guard/",
