@@ -14,6 +14,7 @@ import net from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -35,10 +36,20 @@ const upstream = http.createServer((req, res) => {
 	let body = "";
 	req.on("data", (c) => { body += c; });
 	req.on("end", () => {
-		upstreamSeen.push({ method: req.method, url: req.url, host: req.headers.host, device: req.headers["x-dsh-remote-device"], role: req.headers["x-dsh-remote-role"] });
+		upstreamSeen.push({ method: req.method, url: req.url, host: req.headers.host, device: req.headers["x-dsh-remote-device"], role: req.headers["x-dsh-remote-role"], acceptEncoding: req.headers["accept-encoding"] });
 		if (/^\/api\//.test(req.url)) {
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify({ ok: true, upstream: true }));
+			return;
+		}
+		// /compressed：模拟「本地中间层把页面压成 br/gzip」的真实情况。
+		// 这正是线上踩到的坑：守卫遇到 content-encoding 就跳过注入 → 手机端面板与外观纠偏静默失效。
+		if (req.url.startsWith("/compressed")) {
+			const html = "<html><head></head><body><div id=root>FAKE-DSH-UI-COMPRESSED</div></body></html>";
+			const enc = req.url.endsWith("gzip") ? "gzip" : "br";
+			const body = enc === "gzip" ? zlib.gzipSync(html) : zlib.brotliCompressSync(html);
+			res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-encoding": enc, "content-length": String(body.length) });
+			res.end(body);
 			return;
 		}
 		res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -288,6 +299,22 @@ console.log("\n=== 10. 页面注入：面板脚本 + 启动期外观纠偏 ===")
 	fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
 	await new Promise((r) => setTimeout(r, 1100));
 	check("恢复 injectPanel 后重新注入", (await call("/", { cookie: jar.owner })).text.includes("/__guard/ui.js"));
+}
+
+console.log("\n=== 10b. 上游把页面压缩了也要能注入（线上踩到的坑）===");
+{
+	// 真实链路：cloudflared → 守卫 → remote.mjs（会把 HTML 压成 br）→ DSH。
+	// 早先守卫遇到 content-encoding 就跳过注入，导致手机端面板与外观纠偏在真实链路上静默失效。
+	for (const [urlPath, enc] of [["/compressed", "br"], ["/compressed-gzip", "gzip"]]) {
+		const page = await call(urlPath, { cookie: jar.owner });
+		check(`上游返回 ${enc} 压缩页面时仍能解压并注入（${urlPath}）`,
+			page.status === 200 && page.text.includes("/__guard/ui.js") && page.text.includes("FAKE-DSH-UI-COMPRESSED"), `${page.status} 长度 ${page.text.length}`);
+		check(`注入后不再声称是压缩体（content-encoding 已去掉，${enc}）`, !page.headers.get("content-encoding"), String(page.headers.get("content-encoding")));
+		check(`content-length 与实际字节数一致（${enc}）`, Number(page.headers.get("content-length")) === Buffer.byteLength(page.text, "utf8"));
+		check(`外观纠偏也注入了（${enc}）`, page.text.includes("__dsh_remote_appearance"));
+	}
+	check("守卫给上游发的 accept-encoding 是 identity（本跳回环，压缩没收益还挡注入）",
+		upstreamSeen.some((s) => s.acceptEncoding === "identity"), JSON.stringify(upstreamSeen.at(-1)));
 }
 
 console.log("\n=== 11. 二维码端点 ===");

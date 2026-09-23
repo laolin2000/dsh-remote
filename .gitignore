@@ -10,3 +10,7 @@ public-url.txt
 tunnel.json
 __pycache__/
 .DS_Store
+
+# 线上运行时日志（守卫以隐藏窗口启动时写在这里）
+guard-live.out.log
+guard-live.err.log

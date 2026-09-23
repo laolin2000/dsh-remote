@@ -33,6 +33,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { encode as qrEncode, matrixToSvg, matrixToAscii } from "./qr.mjs";
@@ -541,6 +542,10 @@ function forwardedHeaders(req, device) {
 	const upstream = new URL(conf.upstream);
 	const authority = `${upstream.hostname}:${upstream.port}`;
 	out["host"] = authority;
+	// 请求未压缩的响应：本跳是回环，压缩毫无收益；而压缩过的 HTML 我们没法注入
+	// （实测坑：本地中间层 remote.mjs 会把页面压成 br，守卫遇到 content-encoding 就跳过注入 →
+	//  手机端面板与外观纠偏在真实链路上静默失效，自测里却全绿）。
+	out["accept-encoding"] = "identity";
 	if (out["origin"]) out["origin"] = `http://${authority}`;
 	if (out["referer"]) { try { out["referer"] = new URL(out["referer"]).pathname; } catch { delete out["referer"]; } }
 	if (device) { out["x-dsh-remote-device"] = encodeURIComponent(device.name); out["x-dsh-remote-role"] = device.role; }
@@ -580,6 +585,17 @@ function appearanceKeeperScript(preference) {
 	return `<script id="__dsh_remote_appearance">${js}</scr` + `ipt>`;
 }
 
+/** 把上游的响应体解成明文：上游可能无视我们的 accept-encoding: identity 照样压缩。 */
+function decodeBody(buf, encoding) {
+	switch (encoding) {
+		case "": case "identity": return buf;
+		case "gzip": case "x-gzip": return zlib.gunzipSync(buf);
+		case "deflate": return zlib.inflateSync(buf);
+		case "br": return zlib.brotliDecompressSync(buf);
+		default: throw new Error(`不认识的 content-encoding: ${encoding}`);
+	}
+}
+
 function proxyHttp(req, res, device) {
 	const upstream = new URL(conf.upstream);
 	const proxyReq = http.request({
@@ -588,34 +604,52 @@ function proxyHttp(req, res, device) {
 		headers: forwardedHeaders(req, device)
 	}, (up) => {
 		const ctype = String(up.headers["content-type"] || "");
+		const encoding = String(up.headers["content-encoding"] || "").toLowerCase();
 		// 往 DSH 的 HTML 页面里注入「手机链接」面板：不碰 DSH 内部，也不受它升级影响。
-		if (conf.injectPanel && ctype.includes("text/html") && !up.headers["content-encoding"] && String(req.method).toUpperCase() === "GET") {
+		// 上游即使压缩了也要解压后再注入（上游可能无视我们的 accept-encoding: identity）。
+		if (conf.injectPanel && ctype.includes("text/html") && String(req.method).toUpperCase() === "GET") {
 			const chunks = [];
 			let size = 0, overflow = false;
 			up.on("data", (c) => { size += c.length; if (size > 8 * 1024 * 1024) overflow = true; if (!overflow) chunks.push(c); });
 			up.on("end", () => {
-				let html = Buffer.concat(chunks).toString("utf8");
-				if (!overflow) {
-					// ① 启动期外观纠偏：放在 <head> 里、任何业务脚本之前
-					const pref = readAppearancePreference();
-					if (pref && !html.includes("__dsh_remote_appearance")) {
-						const tag = appearanceKeeperScript(pref);
-						html = html.includes("<head>") ? html.replace("<head>", "<head>" + tag)
-							: html.includes("<!doctype") || html.includes("<!DOCTYPE>") ? html.replace(/<!doctype[^>]*>/i, (m) => m + tag)
-								: tag + html;
-					}
-					// ② 手机链接面板（守卫自己的浮层）
-					if (conf.injectPanel && !html.includes("/__guard/ui.js")) {
-						const tag = '<script src="/__guard/ui.js" defer></script>';
-						html = html.includes("</body>") ? html.replace("</body>", tag + "</body>") : html + tag;
-					}
-				}
+				const raw = Buffer.concat(chunks);
 				const headers = { ...up.headers };
+				if (overflow) {                                  // 太大就原样透传，不动它
+					delete headers["transfer-encoding"];
+					headers["content-length"] = String(raw.length);
+					res.writeHead(up.statusCode || 200, headers);
+					res.end(raw);
+					return;
+				}
+				let html;
+				try { html = decodeBody(raw, encoding).toString("utf8"); }
+				catch (e) {                                       // 解不开就原样透传（宁可没有面板，也不能给坏页面）
+					log(`页面解压失败（${encoding}）：${e.message}，本次不注入`);
+					delete headers["transfer-encoding"];
+					headers["content-length"] = String(raw.length);
+					res.writeHead(up.statusCode || 200, headers);
+					res.end(raw);
+					return;
+				}
+				// ① 启动期外观纠偏：放在 <head> 里、任何业务脚本之前
+				const pref = readAppearancePreference();
+				if (pref && !html.includes("__dsh_remote_appearance")) {
+					const tag = appearanceKeeperScript(pref);
+					html = html.includes("<head>") ? html.replace("<head>", "<head>" + tag)
+						: html.includes("<!doctype") || html.includes("<!DOCTYPE>") ? html.replace(/<!doctype[^>]*>/i, (m) => m + tag)
+							: tag + html;
+				}
+				// ② 手机链接面板（守卫自己的浮层）
+				if (!html.includes("/__guard/ui.js")) {
+					const tag = '<script src="/__guard/ui.js" defer></script>';
+					html = html.includes("</body>") ? html.replace("</body>", tag + "</body>") : html + tag;
+				}
+				const body = Buffer.from(html, "utf8");
 				delete headers["transfer-encoding"];
-				delete headers["content-length"];
-				headers["content-length"] = String(Buffer.byteLength(html));
+				delete headers["content-encoding"];              // 已解压并可能改写过，不能再声称是压缩体
+				headers["content-length"] = String(body.length);
 				res.writeHead(up.statusCode || 200, headers);
-				res.end(html);
+				res.end(body);
 			});
 			up.on("error", () => { try { res.destroy(); } catch {} });
 			return;
