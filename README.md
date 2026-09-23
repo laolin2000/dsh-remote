@@ -1,5 +1,7 @@
 # dsh-remote
 
+[English](README.en.md) | **中文**
+
 给 [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）的 Web 界面加一层**带设备鉴权的远程访问**：
 手机点一条链接就能进 DSH，但**没配对过的设备连不上**，只读设备**发不出指令**。
 

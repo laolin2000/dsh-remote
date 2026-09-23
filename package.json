@@ -19,8 +19,12 @@
   },
   "files": [
     "guard/",
+    "plugin/",
+    "bin/",
+    "docs/",
     "test/",
     "README.md",
+    "README.en.md",
     "LICENSE"
   ],
   "keywords": [
