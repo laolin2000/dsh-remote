@@ -28,6 +28,7 @@
 // 零第三方依赖，只用 Node 内置模块。
 // ============================================================================
 import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import os from "node:os";
 import fs from "node:fs";
@@ -1075,6 +1076,23 @@ function cliRevoke(ident) {
 }
 /** 逐环节体检：把整条链路拆成有顺序的几步，每步给出 ok/warn/fail 与原因，
  *  供面板与 `guard.mjs doctor` 快速定位"到底哪一段没起来"。 */
+/** 单纯探一次 HTTP 状态码：agent:false = 不复用连接。
+ *  为什么不用 fetch：undici 会保留连接池，CLI 里 process.exit 时句柄仍在关闭中，
+ *  Windows 上会抛 libuv 断言（看着像守卫崩了，实际是探测留下的句柄）。 */
+function probeStatus(url, ms = 5000) {
+	return new Promise((resolve) => {
+		let u;
+		try { u = new URL(url); } catch { resolve(0); return; }
+		const mod = u.protocol === "https:" ? https : http;
+		const req = mod.get(u, { agent: false, timeout: ms, headers: { "user-agent": "dsh-remote-doctor" } }, (res) => {
+			res.resume();
+			resolve(res.statusCode || 0);
+		});
+		req.on("error", () => resolve(0));
+		req.on("timeout", () => { req.destroy(); resolve(0); });
+	});
+}
+
 async function doctorSteps() {
 	const steps = [];
 	const add = (id, label, status, detail, hint) => steps.push({ id, label, status, detail, hint: hint || "" });
@@ -1082,13 +1100,9 @@ async function doctorSteps() {
 
 	// 1) 上游（DSH 或本机中间层）——只要求"能应答"，不要求特定状态码
 	{
-		let status = 0, err = "";
-		try {
-			const r = await fetch(new URL("/", conf.upstream), { signal: AbortSignal.timeout(4000) });
-			status = r.status;
-		} catch (e) { err = e?.message || String(e); }
+		const status = await probeStatus(new URL("/", conf.upstream).href, 4000);
 		if (status && status < 600) add("upstream", "上游（DSH / 中间层）", "ok", `${conf.upstream} → HTTP ${status}`);
-		else add("upstream", "上游（DSH / 中间层）", "fail", `${conf.upstream} 不可达${err ? `（${err}）` : ""}`, "确认 DSH 与本机中间层（如 remote.mjs）在运行；端口不对就用 --upstream 改");
+		else add("upstream", "上游（DSH / 中间层）", "fail", `${conf.upstream} 不可达`, "确认 DSH 与本机中间层（如 remote.mjs）在运行；端口不对就用 --upstream 改");
 	}
 
 	// 2) 守卫自己（能跑到这里就说明进程在，但要检查端口/配置文件是否正常）
@@ -1110,11 +1124,7 @@ async function doctorSteps() {
 	if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(url)) {
 		add("public", "公网可达性", "warn", `当前只有本机入口 ${url}（手机打不开）`, "点「启动 / 修复」把隧道拉起来，拿到 https 域名后再发链接");
 	} else {
-		let status = 0;
-		try {
-			const r = await fetch(new URL("/__guard/health", url), { signal: AbortSignal.timeout(25000) });
-			status = r.status;
-		} catch { /* 记 0 */ }
+		const status = await probeStatus(new URL("/__guard/health", url).href, 25000);
 		if (status === 200) add("public", "公网可达性", "ok", `${url} → HTTP 200（手机能连上）`);
 		else add("public", "公网可达性", "fail", `${url} 从本机回打不通${status ? `（HTTP ${status}）` : ""}`, "域名可能已变（Quick Tunnel 每次重启都换）：重新拉一次隧道，或看 urlFile 里的当前域名");
 	}

@@ -7,7 +7,7 @@ Tap one link on your phone and you're inside DSH — but **devices you never pai
 read-only devices **cannot send a single command**.
 
 > Status: guard, long-lived links, role enforcement, tunnel supervision, QR entry and the in-DSH panel are all
-> implemented and exercised. The suites total **355 assertions** — guard 125 / QR 46 / panel (real DOM) 68 /
+> implemented and exercised. The suites total **374 assertions** — guard 125 / QR 46 / panel (real DOM) 68 /
 > plugin routes 51 / desktop helper 15 / plugin installer 28 / one-command setup 30 / live tunnel 11 — all green. Per-feature evidence is in the
 > "Verification log" at the bottom.
 
