@@ -162,7 +162,9 @@ window.__ModuleLoader__.load({
 			const identityLine = el("div", CSS.sub, "当前设备：…");
 			panel.appendChild(identityLine);
 			apiGet("/dsh-remote/whoami").then((me) => {
+				// 旧的服务端半边没有这个路由（插件树不热重载）：那就别留一行「当前设备：…」在那儿
 				if (me && me.ok) identityLine.textContent = "当前设备：" + me.name + "（" + (me.readonly ? "只读" : "owner · 全权") + "）";
+				else identityLine.remove();
 			});
 			panel.appendChild(el("div", CSS.sub, "这条链接长期有效——改之前一直是它。手机点开即自动配对进入 DSH。"));
 
