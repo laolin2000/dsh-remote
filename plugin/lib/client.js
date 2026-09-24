@@ -42,7 +42,9 @@ window.__ModuleLoader__.load({
 			g: "padding:8px 13px;border-radius:8px;border:1px solid #2a3240;background:#1b2130;color:#cfd7e6;font-size:12.5px;cursor:pointer",
 			warn: "padding:8px 13px;border-radius:8px;border:1px solid #6b4a1f;background:#2a1f12;color:#ffd166;font-size:12.5px;cursor:pointer",
 			del: "padding:4px 9px;border-radius:14px;border:1px solid #4a2a2a;background:#241a1a;color:#e08a8a;font-size:11px;cursor:pointer",
-			ok: "color:#3ddc84", bad: "color:#e05252", mut: "color:#8b96ad",
+			ok: "color:#3ddc84", bad: "color:#e05252", mut: "color:#8b96ad", warn: "color:#f0b429",
+			step: "display:flex;align-items:flex-start;gap:7px;padding:4px 0;border-bottom:1px solid #1e2532;font-size:11px;line-height:1.5",
+			stepDot: "width:8px;height:8px;border-radius:50%;flex:none;margin-top:4px",
 			dev: "display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #1e2532"
 		};
 
@@ -206,6 +208,9 @@ window.__ModuleLoader__.load({
 			healthCard.appendChild(el("div", null, "运行状态"));
 			const healthLine = el("div", CSS.sub, "正在体检…");
 			healthCard.appendChild(healthLine);
+			const healthSteps = el("div", null, "");
+			healthSteps.setAttribute("style", "margin:6px 0 2px");
+			healthCard.appendChild(healthSteps);
 			const fixRow = el("div", CSS.row);
 			const fixBtn = el("button", CSS.b, "启动 / 修复");
 			fixBtn.setAttribute("style", "display:none");
@@ -334,9 +339,33 @@ window.__ModuleLoader__.load({
 			loadLinks();
 			loadDevices();
 
+			/** 逐环节渲染：每行一个环节，带状态点 + 原因 + 修法（快速定位到"哪一段没起来"） */
+			function renderSteps(list) {
+				healthSteps.textContent = "";
+				const color = { ok: "#22c55e", warn: "#f0b429", fail: "#e05252" };
+				const mark = { ok: "✓", warn: "!", fail: "✗" };
+				(list || []).forEach((st) => {
+					const row = el("div", CSS.step);
+					const dot = el("span", CSS.stepDot);
+					dot.setAttribute("style", CSS.stepDot + ";background:" + (color[st.status] || "#8b96ad"));
+					dot.textContent = mark[st.status] === "✓" ? "" : "";
+					const body = el("div", null);
+					const head = el("div", null, `${st.label}　`);
+					const tag = el("span", "color:" + (color[st.status] || "#8b96ad"), st.status === "ok" ? "正常" : st.status === "warn" ? "注意" : "失败");
+					head.appendChild(tag);
+					body.appendChild(head);
+					body.appendChild(el("div", CSS.mut, st.detail || ""));
+					if (st.hint && st.status !== "ok") body.appendChild(el("div", CSS.warn, "↳ " + st.hint));
+					row.appendChild(dot);
+					row.appendChild(body);
+					healthSteps.appendChild(row);
+				});
+			}
+
 			/** 体检 + 需要时给出一键修复（守卫掉了就把它拉起来、隧道掉了就拉隧道）。 */
 			function loadHealth() {
 				healthLine.textContent = "正在体检…";
+				healthSteps.textContent = "";
 				fixBtn.setAttribute("style", "display:none");
 				apiGet("/dsh-remote/health").then((h) => {
 					if (!h || !h.ok) {
@@ -344,11 +373,15 @@ window.__ModuleLoader__.load({
 						healthLine.setAttribute("style", CSS.bad);
 						return;
 					}
-					const guardTxt = h.guard ? "守卫 ✓" : "守卫 ✗ 未运行";
-					const tunTxt = h.tunnel?.alive ? `隧道 ✓ ${h.tunnel.url || ""}` : "隧道 ✗ 未运行";
-					const bad = (h.problems || []).length > 0;
-					healthLine.textContent = `${guardTxt}　${tunTxt}` + (bad ? "　— " + h.problems.join("；") : "");
-					healthLine.setAttribute("style", bad ? CSS.bad : CSS.ok);
+					const list = h.steps || [];
+					renderSteps(list);
+					const fails = list.filter((s) => s.status === "fail").length;
+					const warns = list.filter((s) => s.status === "warn").length;
+					const bad = fails > 0 || warns > 0;
+					healthLine.textContent = list.length
+						? `逐环节体检：${list.length} 项 · 正常 ${list.length - fails - warns} · 注意 ${warns} · 失败 ${fails}`
+						: "体检完成（这一版插件还没有逐环节数据，重启一次 DSH 即可）";
+					healthLine.setAttribute("style", fails ? CSS.bad : (warns ? CSS.warn : CSS.ok));
 					fixBtn.setAttribute("style", bad ? CSS.b.replace("display:none", "") + ";display:inline-block" : "display:none");
 				});
 			}

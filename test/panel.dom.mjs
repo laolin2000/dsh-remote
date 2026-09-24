@@ -62,6 +62,17 @@ function makeFetch({ ownerVisible = true, calls = [], health = null, healthFails
 			if (p.startsWith("/__guard/links")) return json({ ok: true, owner: { url: OWNER_LINK, createdAt: "2026-09-23T00:00:00Z" }, readonly: { url: RO_LINK, createdAt: "2026-09-23T00:00:00Z" } });
 			if (p.startsWith("/__guard/devices")) return json({ ok: true, devices: [QUIET_DEVICE, RO_DEVICE] });
 			if (p.startsWith("/__guard/qr")) return raw(SVG, "image/svg+xml");
+			if (p.startsWith("/__guard/doctor")) return json({
+				ok: true, entry: "https://demo-entry.trycloudflare.com",
+				steps: [
+					{ id: "upstream", label: "上游（DSH / 中间层）", status: "ok", detail: "http://127.0.0.1:3081 → HTTP 200", hint: "" },
+					{ id: "guard", label: "守卫（鉴权层）", status: "ok", detail: "监听 127.0.0.1:8443", hint: "" },
+					{ id: "tunnel", label: "公网隧道（cloudflared）", status: "fail", detail: "隧道进程不在", hint: "点「启动 / 修复」" },
+					{ id: "public", label: "公网可达性", status: "warn", detail: "当前只有本机入口", hint: "把隧道拉起来" },
+					{ id: "links", label: "手机链接", status: "ok", detail: "主链接与只读链接都已生成", hint: "" },
+					{ id: "devices", label: "已授权设备", status: "ok", detail: "1 台设备 · 1 个在线会话", hint: "" }
+				]
+			});
 			if (p.startsWith("/__guard/reset")) return json({ ok: true, owner: { url: OWNER_LINK + "NEW", createdAt: "2026-09-23T01:00:00Z" }, readonly: { url: RO_LINK + "NEW" } });
 			if (p.startsWith("/__guard/revoke")) return json({ ok: true });
 			return json({ ok: false }, 404);
@@ -71,7 +82,17 @@ function makeFetch({ ownerVisible = true, calls = [], health = null, healthFails
 			if (p.startsWith("/dsh-remote/status")) return json({ ok: true, guardPath: "x", tunnel: {}, sessions: 1 });
 			if (p.startsWith("/dsh-remote/health")) {
 				if (healthFails) return json({ ok: false }, 404);
-				return json({ ok: true, guard: true, guardPort: 8443, upstream: "http://127.0.0.1:3081", tunnel: { alive: true, url: "https://demo-entry.trycloudflare.com", desired: true }, cloudflared: "x", problems: [], ...(health || {}) });
+				const baseSteps = [
+					{ id: "dsh", label: "DSH 本体（面板宿主）", status: "ok", detail: "插件运行中 · 本机端口 127.0.0.1:50142", hint: "" },
+					{ id: "upstream", label: "上游（DSH / 本机中间层）", status: "ok", detail: "http://127.0.0.1:3081 → HTTP 200", hint: "" },
+					{ id: "guard", label: "守卫（鉴权层）", status: "ok", detail: "http://127.0.0.1:8443 响应正常", hint: "" },
+					{ id: "tunnel", label: "公网隧道（cloudflared）", status: "ok", detail: "进程 PID 123 存活 · 域名 https://demo-entry.trycloudflare.com", hint: "" },
+					{ id: "public", label: "公网可达性", status: "ok", detail: "https://demo-entry.trycloudflare.com → HTTP 200（手机能连上）", hint: "" },
+					{ id: "links", label: "手机链接", status: "ok", detail: "主链接与只读链接都已生成", hint: "" },
+					{ id: "devices", label: "已授权设备", status: "ok", detail: "1 台设备 · 1 个在线会话", hint: "" }
+				];
+				const merged = health ? baseSteps.map((st) => (health.steps || []).find((x) => x.id === st.id) || st) : baseSteps;
+				return json({ ok: true, guard: true, guardPort: 8443, upstream: "http://127.0.0.1:3081", tunnel: { alive: true, url: "https://demo-entry.trycloudflare.com", desired: true }, cloudflared: "x", problems: [], steps: merged, ...(health || {}) });
 			}
 			if (p.startsWith("/dsh-remote/start")) return json({ ok: true, guard: { ok: true, started: true }, tunnel: { ok: true, started: false } });
 			if (p.startsWith("/dsh-remote/links")) return json({ ok: true, owner: { url: OWNER_LINK, createdAt: "2026-09-23T00:00:00Z" }, readonly: { url: RO_LINK } });
@@ -166,6 +187,14 @@ console.log("\n=== A. 守卫注入版 guard/ui.js ===");
 	revokeBtn.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
 	await tick(); await tick();
 	check("「吊销」发出 revoke 请求", calls.some((c) => c.path.startsWith("/__guard/revoke")));
+
+	// 手机端也有逐环节体检（在关闭之前检查）
+	await tick(); await tick();
+	check("手机端面板也有「连接体检（逐环节）」", (layer(w).textContent || "").includes("连接体检（逐环节）"), (layer(w).textContent || "").slice(0, 200));
+	const panA = layer(w).textContent || "";
+	check("手机端逐环节列出上游/守卫/隧道/公网/链接/设备", ["上游（DSH / 中间层）", "守卫（鉴权层）", "公网隧道（cloudflared）", "公网可达性", "手机链接", "已授权设备"].every((x) => panA.includes(x)), panA.slice(0, 300));
+	check("手机端也标出失败项与修法", /失败/.test(panA) && /↳/.test(panA), panA.slice(0, 300));
+	check("手机端摘要给出合计", /6 项 · 正常 4 · 注意 1 · 失败 1/.test(panA), panA.slice(0, 200));
 
 	// 关闭：遮罩与面板必须一起消失（用户报的 bug）
 	const closeBtn = findByText(w, "关闭");
@@ -327,7 +356,11 @@ console.log("\n=== G. 运行状态与「一键修复」 ===");
 	await tick(); await tick(); await tick(); await tick();
 	const pan = layer(w).textContent || "";
 	check("面板里有「运行状态」一栏", pan.includes("运行状态"));
-	check("正常时状态行报守卫与隧道都 ✓", /守卫 ✓/.test(pan) && /隧道 ✓/.test(pan), pan.slice(0, 160));
+	check("正常时逐环节全部标为正常", /逐环节体检：7 项 · 正常 7/.test(pan), pan.slice(0, 160));
+	check("正常时也逐条列出守卫与隧道", /守卫（鉴权层）/.test(pan) && /公网隧道（cloudflared）/.test(pan), pan.slice(0, 220));
+	check("逐环节列表把每个环节都列出来了（7 项）", (pan.match(/DSH 本体|上游（DSH|守卫（鉴权层）|公网隧道|公网可达性|手机链接|已授权设备/g) || []).length >= 7, pan.slice(0, 300));
+	check("每步都标了状态（正常）", /正常/.test(pan) && /公网可达性/.test(pan));
+	check("摘要行给出合计", /逐环节体检：7 项 · 正常 7/.test(pan), pan.slice(0, 160));
 	const fixBtn = [...w.document.querySelectorAll("button")].find((b) => (b.textContent || "").includes("启动 / 修复"));
 	check("正常时修复按钮是隐藏的", !!fixBtn && (fixBtn.getAttribute("style") || "").includes("display:none"), fixBtn && fixBtn.getAttribute("style"));
 
@@ -335,7 +368,14 @@ console.log("\n=== G. 运行状态与「一键修复」 ===");
 	const calls = [];
 	const { w: w2 } = setupDom({
 		scriptPath: path.join(SELF_DIR, "..", "plugin", "lib", "client.js"), calls,
-		health: { guard: false, problems: ["守卫没在运行（手机链接、二维码都靠它）"], tunnel: { alive: false, url: "", desired: true } }
+		health: {
+			guard: false, problems: ["守卫（鉴权层）：http://127.0.0.1:8443 没有响应"],
+			tunnel: { alive: false, url: "", desired: true },
+			steps: [
+				{ id: "guard", label: "守卫（鉴权层）", status: "fail", detail: "http://127.0.0.1:8443 没有响应（手机链接、二维码都靠它）", hint: "点下面的「启动 / 修复」" },
+				{ id: "tunnel", label: "公网隧道（cloudflared）", status: "fail", detail: "隧道进程不在", hint: "点「启动 / 修复」" }
+			]
+		}
 	});
 	const mod2 = w2.__slots["dsh-remote-panel"];
 	const reg2 = [];
@@ -345,7 +385,9 @@ console.log("\n=== G. 运行状态与「一键修复」 ===");
 	btn(w2).dispatchEvent(new w2.MouseEvent("click", { bubbles: true }));
 	await tick(); await tick(); await tick(); await tick();
 	const pan2 = layer(w2).textContent || "";
-	check("守卫掉了时明确写出来", /守卫 ✗ 未运行/.test(pan2) && /守卫没在运行/.test(pan2), pan2.slice(0, 200));
+	check("守卫掉了时逐环节里标为失败并给出原因", /守卫（鉴权层）/.test(pan2) && /没有响应/.test(pan2) && /失败/.test(pan2), pan2.slice(0, 240));
+	check("失败项带修法提示（↳）", /↳/.test(pan2), pan2.slice(0, 300));
+	check("摘要行统计失败数", /失败 2/.test(pan2), pan2.slice(0, 160));
 	const fix2 = [...w2.document.querySelectorAll("button")].find((b) => (b.textContent || "").includes("启动 / 修复"));
 	check("有问题时修复按钮可见", !!fix2 && !(fix2.getAttribute("style") || "").includes("display:none"), fix2 && fix2.getAttribute("style"));
 	fix2.dispatchEvent(new w2.MouseEvent("click", { bubbles: true }));

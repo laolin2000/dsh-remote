@@ -122,23 +122,73 @@ function guardBase() {
 async function probe(url, ms = 2500) {
 	try { const r = await fetch(url, { signal: AbortSignal.timeout(ms) }); return r.ok; } catch { return false; }
 }
-/** 逐段健康：守卫 / 隧道 / 上游（上游探的是守卫的配置，不是 DSH 自己） */
-async function chainHealth() {
+/** 逐环节体检：把整条链路拆成有顺序的几步，每步 ok/warn/fail + 原因 + 修法。
+ *  面板据此快速定位"到底哪一段没起来"（顺序即链路顺序）。 */
+async function chainSteps(hostHeader) {
+	const steps = [];
+	const add = (id, label, status, detail, hint) => steps.push({ id, label, status, detail, hint: hint || "" });
 	const { base, conf } = guardBase();
-	const guardOk = await probe(base + "/__guard/health");
 	const tun = readJson(TUNNEL_STATE) || {};
-	const cfg = readJson(GUARD_CONF) || {};
+	const guardOk = await probe(base + "/__guard/health");
 	let url = "";
-	try { if (cfg.urlFile && fs.existsSync(cfg.urlFile)) url = fs.readFileSync(cfg.urlFile, "utf8").trim(); } catch {}
+	try { if (conf.urlFile && fs.existsSync(conf.urlFile)) url = fs.readFileSync(conf.urlFile, "utf8").trim(); } catch {}
 	if (!url) url = tun.url || "";
-	const problems = [];
-	if (!guardOk) problems.push("守卫没在运行（手机链接、二维码都靠它）");
-	if (guardOk && conf.superviseTunnel !== false && !pidAlive(tun.pid)) problems.push("公网隧道没在运行（手机连不上，只能本机打开）");
+
+	// 1) DSH 本体：面板就跑在它里面，能渲染出来本身就说明它是活的
+	add("dsh", "DSH 本体（面板宿主）", "ok", `插件运行中 · 本机端口 ${hostHeader || "(未知)"}`);
+
+	// 2) 上游（DSH 自己的端口，或本机中间层）
+	{
+		const up = conf.upstream || "";
+		let status = 0;
+		try { const r = await fetch(new URL("/", up), { signal: AbortSignal.timeout(4000) }); status = r.status; } catch { /* 0 */ }
+		if (status && status < 600) add("upstream", "上游（DSH / 本机中间层）", "ok", `${up} → HTTP ${status}`);
+		else add("upstream", "上游（DSH / 本机中间层）", "fail", `${up || "(未配置)"} 不可达`, "确认 DSH 与本机中间层（如 remote.mjs）在运行；端口不对就 node guard/guard.mjs serve --upstream <url> 改");
+	}
+
+	// 3) 守卫
+	if (guardOk) add("guard", "守卫（鉴权层）", "ok", `${base} 响应正常 · 配置 ${GUARD_CONF}`);
+	else add("guard", "守卫（鉴权层）", "fail", `${base} 没有响应（手机链接、二维码都靠它）`, "点「启动 / 修复」；插件每 60 秒也会自动检查并拉起");
+
+	// 4) 隧道进程
+	if (pidAlive(tun.pid)) add("tunnel", "公网隧道（cloudflared）", "ok", `进程 PID ${tun.pid} 存活${url ? ` · 域名 ${url}` : ""}`);
+	else if (conf.superviseTunnel === false) add("tunnel", "公网隧道（cloudflared）", "warn", "已被 tunnel down 关掉（不想要公网入口时属正常）", "想要公网入口就点「启动 / 修复」");
+	else if (!conf.cloudflared || !fs.existsSync(conf.cloudflared)) add("tunnel", "公网隧道（cloudflared）", "fail", "配置里没有可用的 cloudflared", "用 node bin/setup.mjs --cloudflared <路径> 指定一次（会被记住）");
+	else add("tunnel", "公网隧道（cloudflared）", "fail", "隧道进程不在（守卫的守护会在 10 秒内尝试重启）", "点「启动 / 修复」，或跑 node guard/guard.mjs tunnel up 看报错");
+
+	// 5) 公网可达性（从本机回打自己的公网域名）
+	if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(url)) {
+		add("public", "公网可达性", "warn", `当前只有本机入口 ${url || "(无)"}（手机打不开）`, "点「启动 / 修复」把隧道拉起来");
+	} else if (url) {
+		let status = 0;
+		try { const r = await fetch(url + "/__guard/health", { signal: AbortSignal.timeout(25000) }); status = r.status; } catch { /* 0 */ }
+		if (status === 200) add("public", "公网可达性", "ok", `${url} → HTTP 200（手机能连上）`);
+		else add("public", "公网可达性", "fail", `${url} 回打不通${status ? `（HTTP ${status}）` : ""}`, "域名可能已变（Quick Tunnel 每次重启都换）：点「启动 / 修复」重拉隧道");
+	} else {
+		add("public", "公网可达性", "fail", "还没有公网域名", "点「启动 / 修复」");
+	}
+
+	// 6) 手机链接 / 7) 设备
+	const links = linksFromState();
+	if (links.owner && links.readonly) add("links", "手机链接", links.owner.local ? "warn" : "ok", links.owner.local ? "链接已生成，但还是本机入口（手机打不开）" : "主链接与只读链接都已生成");
+	else add("links", "手机链接", "warn", "链接还没生成", "跑 node guard/guard.mjs pair 生成");
+	const devices = conf.devices || [];
+	const active = (conf.sessions || []).filter((s) => s.expiresAt > Date.now()).length;
+	if (devices.length) add("devices", "已授权设备", "ok", `${devices.length} 台设备 · ${active} 个在线会话`);
+	else add("devices", "已授权设备", "warn", "还没有设备配对过", "把主链接发到手机上打开（或扫二维码）");
+
 	return {
-		guard: guardOk, guardPort: conf.port || 8443, upstream: conf.upstream || "",
+		steps, guard: guardOk, guardPort: conf.port || 8443, upstream: conf.upstream || "",
 		tunnel: { alive: pidAlive(tun.pid), url, desired: conf.superviseTunnel !== false, pid: tun.pid || null },
-		cloudflared: conf.cloudflared || "", problems
+		cloudflared: conf.cloudflared || "", links
 	};
+}
+
+/** 逐段健康（含 steps 阶段检测与 problems 摘要） */
+async function chainHealth(hostHeader) {
+	const r = await chainSteps(hostHeader);
+	const problems = r.steps.filter((s) => s.status !== "ok").map((s) => `${s.label}：${s.detail}`);
+	return { ...r, problems };
 }
 let starting = null;
 /** 守卫不在就拉起来（并发去重；最多等 12 秒看它是否就绪）。 */
@@ -199,7 +249,7 @@ export function apply(ctx, config) {
 
 			// 逐段体检：守卫 / 隧道 / 上游（面板据此告诉用户"哪一段没起来"）
 			if (pathname === "/dsh-remote/health" && method === "GET") {
-				json(res, 200, { ok: true, ...(await chainHealth()) });
+				json(res, 200, { ok: true, ...(await chainHealth(String(req.headers.host || ""))) });
 				return;
 			}
 
@@ -208,7 +258,7 @@ export function apply(ctx, config) {
 				const g = await ensureGuard(guardPath);
 				const t = g.ok ? await ensureTunnel(guardPath) : { ok: false, error: "守卫未就绪，跳过隧道" };
 				// 注意：体检结果要放在 health 键下，别和 start 的结果同名（踩过：展开覆盖后 PID 与错误原因全丢了）
-				const health = await chainHealth();
+				const health = await chainHealth(String(req.headers.host || ""));
 				json(res, g.ok && t.ok ? 200 : 500, { ok: g.ok && t.ok, guard: g, tunnel: t, health });
 				return;
 			}

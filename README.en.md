@@ -7,8 +7,8 @@ Tap one link on your phone and you're inside DSH — but **devices you never pai
 read-only devices **cannot send a single command**.
 
 > Status: guard, long-lived links, role enforcement, tunnel supervision, QR entry and the in-DSH panel are all
-> implemented and exercised. The suites total **339 assertions** — guard 117 / QR 46 / panel (real DOM) 58 /
-> plugin routes 44 / desktop helper 15 / plugin installer 28 / one-command setup 30 / live tunnel 11 — all green. Per-feature evidence is in the
+> implemented and exercised. The suites total **355 assertions** — guard 125 / QR 46 / panel (real DOM) 68 /
+> plugin routes 51 / desktop helper 15 / plugin installer 28 / one-command setup 30 / live tunnel 11 — all green. Per-feature evidence is in the
 > "Verification log" at the bottom.
 
 ---
@@ -183,6 +183,9 @@ Audit: `$DSH_HOME/remote/audit.jsonl` (append-only JSONL). Log: `guard.log`.
   so "the domain changed and I don't know the new link" stops being a thing;
 - **Visible failures**: unauthorized requests get an actual **pairing page** rather than a blank error; an
   unreachable upstream produces an explicit message; every rejection lands in the audit log.
+- **Hop-by-hop diagnosis**: the panel's "连接体检（逐环节）" lists upstream → guard → tunnel → public reachability →
+  phone links → devices, each with正常/注意/失败 plus the reason and the fix (failures tell you what to click).
+  The CLI runs the same checks: `node guard/guard.mjs doctor`.
 
 ## Deployment
 
@@ -227,7 +230,7 @@ guard/qr.mjs         built-in QR encoder (byte mode / versions 1–10 / L-M-Q-H 
 guard/ui.js          the control panel the guard injects into phone-side pages
 plugin/              DSH UI plugin (desktop "phone link" panel + control-plane routes)
 bin/                 desktop helper scripts (show / reset / QR / copy the link)
-test/                tests: selftest(117) qr(46) panel.dom(58) plugin(44) bin(15) install(28) setup(30) tunnel(11)
+test/                tests: selftest(125) qr(46) panel.dom(68) plugin(51) bin(15) install(28) setup(30) tunnel(11)
 docs/deploy/         keep-alive templates for Windows / macOS / Linux
 ```
 
@@ -294,7 +297,6 @@ What the suites cover:
 ## Roadmap
 
 - Named tunnel / stable domain (the Quick Tunnel domain changes on every restart — the biggest rough edge today)
-- `guard.mjs doctor` (upstream reachability, tunnel health, port conflicts in one shot)
 - Audit viewer, per-device rate limiting, configurable read-method allow-list for read-only devices
 - Completion notifications
 

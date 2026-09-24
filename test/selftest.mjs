@@ -419,6 +419,23 @@ console.log("\n=== 15. 命令行覆盖项（从零安装时用得上）===");
 	fs.rmSync(T2, { recursive: true, force: true });
 }
 
+console.log("\n=== 16. 逐环节体检（doctor）===");
+{
+	const d = await call("/__guard/doctor", { cookie: jar.owner });
+	const j = JSON.parse(d.text);
+	check("owner 取体检 → 200 且带 steps", d.status === 200 && Array.isArray(j.steps) && j.steps.length >= 5, `${d.status} steps=${j.steps?.length}`);
+	const ids = (j.steps || []).map((s) => s.id);
+	check("步骤按链路顺序给出（上游 → 守卫 → 隧道 → 公网 → 链接 → 设备）",
+		ids.join(",") === "upstream,guard,tunnel,public,links,devices", ids.join(","));
+	check("每一步都有 label/status/detail", (j.steps || []).every((s) => s.label && ["ok", "warn", "fail"].includes(s.status) && typeof s.detail === "string"));
+	check("失败/注意的步骤带修法提示", (j.steps || []).filter((s) => s.status !== "ok").every((s) => !!s.hint));
+	check("上游那段被判为正常（假上游在跑）", (j.steps || []).find((s) => s.id === "upstream")?.status === "ok", JSON.stringify((j.steps || []).find((s) => s.id === "upstream")));
+	check("只读设备取体检 → 403（控制面）", (await call("/__guard/doctor", { cookie: jar.readonly })).status === 403);
+	const cli = await runCli(["doctor"]);
+	check("CLI doctor 打印逐环节表格", /逐环节体检/.test(cli) && /上游/.test(cli) && /守卫/.test(cli), cli.slice(0, 120));
+	check("CLI doctor 末尾给出合计", /合计：\d+ 项/.test(cli), cli.slice(-160));
+}
+
 guard.kill();
 upstream.close();
 await new Promise((r) => setTimeout(r, 300));

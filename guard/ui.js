@@ -15,7 +15,7 @@
   if (window.__dshRemoteUi) return;
   window.__dshRemoteUi = true;
 
-  var API = { status: "/__guard/status", links: "/__guard/links", link: "/__guard/link", devices: "/__guard/devices", revoke: "/__guard/revoke", reset: "/__guard/reset", qr: "/__guard/qr" };
+  var API = { status: "/__guard/status", links: "/__guard/links", link: "/__guard/link", devices: "/__guard/devices", revoke: "/__guard/revoke", reset: "/__guard/reset", qr: "/__guard/qr", doctor: "/__guard/doctor" };
 
   function el(tag, css, text) {
     var e = document.createElement(tag);
@@ -83,7 +83,9 @@
     g: "padding:8px 13px;border-radius:8px;border:1px solid #2a3240;background:#1b2130;color:#cfd7e6;font-size:12.5px;cursor:pointer",
     warn: "padding:8px 13px;border-radius:8px;border:1px solid #6b4a1f;background:#2a1f12;color:#ffd166;font-size:12.5px;cursor:pointer",
     del: "padding:4px 9px;border-radius:14px;border:1px solid #4a2a2a;background:#241a1a;color:#e08a8a;font-size:11px;cursor:pointer",
-    ok: "color:#3ddc84", bad: "color:#e05252", mut: "color:#8b96ad",
+    ok: "color:#3ddc84", bad: "color:#e05252", mut: "color:#8b96ad", warn: "color:#f0b429",
+    step: "display:flex;align-items:flex-start;gap:7px;padding:4px 0;border-bottom:1px solid #1e2532;font-size:11px;line-height:1.5",
+    stepDot: "width:8px;height:8px;border-radius:50%;flex:none;margin-top:4px",
     dev: "display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #1e2532",
     tag: "font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid #1f5c3f;color:#3ddc84;margin-left:6px"
   };
@@ -168,6 +170,49 @@
     var status = el("div", CSS.sub, "");
     card.appendChild(status);
     panel.appendChild(card);
+
+    // ---- 逐环节体检（快速定位哪一段没起来）----
+    var docCard = el("div", CSS.card);
+    var docHead = el("div", CSS.row);
+    docHead.setAttribute("style", CSS.row + ";justify-content:space-between");
+    docHead.appendChild(el("div", null, "连接体检（逐环节）"));
+    var docBtn = el("button", CSS.g, "重新体检");
+    docHead.appendChild(docBtn);
+    docCard.appendChild(docHead);
+    var docSum = el("div", CSS.sub, "正在体检…");
+    docCard.appendChild(docSum);
+    var docList = el("div", null, "");
+    docCard.appendChild(docList);
+    panel.appendChild(docCard);
+
+    function loadDoctor() {
+      docSum.textContent = "正在体检…";
+      docList.textContent = "";
+      jget(API.doctor).then(function (d) {
+        if (!d || !d.ok || !d.steps) { docSum.textContent = "体检失败（守卫版本较旧？）"; docSum.setAttribute("style", CSS.sub + ";" + CSS.bad); return; }
+        var color = { ok: "#22c55e", warn: "#f0b429", fail: "#e05252" };
+        var fails = 0, warns = 0;
+        d.steps.forEach(function (st) {
+          if (st.status === "fail") fails++; else if (st.status === "warn") warns++;
+          var row = el("div", CSS.step);
+          var dot = el("span", CSS.stepDot);
+          dot.setAttribute("style", CSS.stepDot + ";background:" + (color[st.status] || "#8b96ad"));
+          var body = el("div", null);
+          var head = el("div", null, st.label + "　");
+          head.appendChild(el("span", "color:" + (color[st.status] || "#8b96ad"), st.status === "ok" ? "正常" : st.status === "warn" ? "注意" : "失败"));
+          body.appendChild(head);
+          body.appendChild(el("div", CSS.mut, st.detail || ""));
+          if (st.hint && st.status !== "ok") body.appendChild(el("div", CSS.warn, "↳ " + st.hint));
+          row.appendChild(dot);
+          row.appendChild(body);
+          docList.appendChild(row);
+        });
+        docSum.textContent = d.steps.length + " 项 · 正常 " + (d.steps.length - fails - warns) + " · 注意 " + warns + " · 失败 " + fails;
+        docSum.setAttribute("style", CSS.sub + ";" + (fails ? CSS.bad : warns ? CSS.warn : CSS.ok));
+      });
+    }
+    docBtn.addEventListener("click", loadDoctor);
+    loadDoctor();
 
     // ---- 设备 ----
     var devCard = el("div", CSS.card);

@@ -22,7 +22,7 @@
 // 用法：
 //   node guard.mjs serve                        启动（默认 127.0.0.1:8443 → 上游 3081）
 //   node guard.mjs pair [--role readonly] [--name iPhone] [--ttl 300]
-//   node guard.mjs devices | revoke <id|名称> | status | print
+//   node guard.mjs devices | revoke <id|名称> | status | doctor | print
 //   node guard.mjs tunnel up|down|status         管理 cloudflared 公网入口
 //
 // 零第三方依赖，只用 Node 内置模块。
@@ -457,8 +457,7 @@ async function serveGuardEndpoint(req, res, urlPath) {
 	}
 
 	// 状态（仅 owner；本机直连同样算 owner）
-	if (urlPath === "/__guard/status") {
-		const auth = resolveDevice(req) || (isLocalTrusted(req) ? { device: { name: "本机(直连)", role: "owner" } } : null);
+	if (urlPath === "/__guard/status") {		const auth = resolveDevice(req) || (isLocalTrusted(req) ? { device: { name: "本机(直连)", role: "owner" } } : null);
 		if (!auth || auth.device.role !== "owner") { send(res, 403, "application/json; charset=utf-8", JSON.stringify({ ok: false, error: "仅 owner 设备可看状态" })); return true; }
 		const tunnel = tunnelState();
 		send(res, 200, "application/json; charset=utf-8", JSON.stringify({
@@ -493,7 +492,7 @@ async function serveGuardEndpoint(req, res, urlPath) {
 	}
 
 	// 以下端点都只给 owner：生成链接 / 设备列表 / 吊销 / 重置 / 二维码
-	const ownerOnly = urlPath === "/__guard/link" || urlPath === "/__guard/links" || urlPath === "/__guard/devices" || urlPath === "/__guard/revoke" || urlPath === "/__guard/reset" || urlPath === "/__guard/qr";
+	const ownerOnly = urlPath === "/__guard/link" || urlPath === "/__guard/links" || urlPath === "/__guard/devices" || urlPath === "/__guard/revoke" || urlPath === "/__guard/reset" || urlPath === "/__guard/qr" || urlPath === "/__guard/doctor";
 	if (ownerOnly) {
 		const auth = resolveDevice(req) || (isLocalTrusted(req) ? { device: { name: "本机(直连)", role: "owner" } } : null);
 		if (!auth || auth.device.role !== "owner") {
@@ -524,6 +523,14 @@ async function serveGuardEndpoint(req, res, urlPath) {
 			send(res, 200, "application/json; charset=utf-8", JSON.stringify({
 				ok: true, owner: currentLink("owner", {}), readonly: currentLink("readonly", {})
 			}));
+			return true;
+		}
+		if (urlPath === "/__guard/doctor") {                 // 逐环节体检（面板与 CLI 共用同一套判断）
+			try {
+				send(res, 200, "application/json; charset=utf-8", JSON.stringify({ ok: true, ...(await doctorSteps()) }));
+			} catch (e) {
+				send(res, 500, "application/json; charset=utf-8", JSON.stringify({ ok: false, error: `体检异常：${e.message}` }));
+			}
 			return true;
 		}
 		if (urlPath === "/__guard/qr") {                        // 手机二维码（SVG，扫码即进）
@@ -1066,6 +1073,85 @@ function cliRevoke(ident) {
 	audit({ event: "revoke", device: dev.name, role: dev.role });
 	console.log(`已吊销 ${dev.name}（${dev.role}）并注销其全部会话`);
 }
+/** 逐环节体检：把整条链路拆成有顺序的几步，每步给出 ok/warn/fail 与原因，
+ *  供面板与 `guard.mjs doctor` 快速定位"到底哪一段没起来"。 */
+async function doctorSteps() {
+	const steps = [];
+	const add = (id, label, status, detail, hint) => steps.push({ id, label, status, detail, hint: hint || "" });
+	const tstate = tunnelState();
+
+	// 1) 上游（DSH 或本机中间层）——只要求"能应答"，不要求特定状态码
+	{
+		let status = 0, err = "";
+		try {
+			const r = await fetch(new URL("/", conf.upstream), { signal: AbortSignal.timeout(4000) });
+			status = r.status;
+		} catch (e) { err = e?.message || String(e); }
+		if (status && status < 600) add("upstream", "上游（DSH / 中间层）", "ok", `${conf.upstream} → HTTP ${status}`);
+		else add("upstream", "上游（DSH / 中间层）", "fail", `${conf.upstream} 不可达${err ? `（${err}）` : ""}`, "确认 DSH 与本机中间层（如 remote.mjs）在运行；端口不对就用 --upstream 改");
+	}
+
+	// 2) 守卫自己（能跑到这里就说明进程在，但要检查端口/配置文件是否正常）
+	add("guard", "守卫（鉴权层）", "ok", `监听 ${conf.bind}:${conf.port} · 配置文件 ${CONF_FILE}`);
+
+	// 3) 隧道进程
+	if (tstate.pid && alive(tstate.pid)) {
+		add("tunnel", "公网隧道（cloudflared）", "ok", `进程 PID ${tstate.pid} 存活${tstate.url ? ` · 域名 ${tstate.url}` : ""}`);
+	} else if (!conf.superviseTunnel) {
+		add("tunnel", "公网隧道（cloudflared）", "warn", "已被 tunnel down 关掉（不想要公网入口时属正常）", "想要公网入口就点面板的「启动 / 修复」，或跑 tunnel up");
+	} else if (!findCloudflared()) {
+		add("tunnel", "公网隧道（cloudflared）", "fail", "找不到 cloudflared", "用 tunnel up --cloudflared <路径> 指定一次（会被记住），或放进 PATH");
+	} else {
+		add("tunnel", "公网隧道（cloudflared）", "fail", "隧道进程不在（守护会在 10 秒内尝试重启）", "点「启动 / 修复」，或跑 tunnel up 看具体报错");
+	}
+
+	// 4) 公网可达性（从本机回打一次自己的公网域名）
+	const url = entryUrl();
+	if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(url)) {
+		add("public", "公网可达性", "warn", `当前只有本机入口 ${url}（手机打不开）`, "点「启动 / 修复」把隧道拉起来，拿到 https 域名后再发链接");
+	} else {
+		let status = 0;
+		try {
+			const r = await fetch(new URL("/__guard/health", url), { signal: AbortSignal.timeout(25000) });
+			status = r.status;
+		} catch { /* 记 0 */ }
+		if (status === 200) add("public", "公网可达性", "ok", `${url} → HTTP 200（手机能连上）`);
+		else add("public", "公网可达性", "fail", `${url} 从本机回打不通${status ? `（HTTP ${status}）` : ""}`, "域名可能已变（Quick Tunnel 每次重启都换）：重新拉一次隧道，或看 urlFile 里的当前域名");
+	}
+
+	// 5) 手机链接
+	{
+		const owner = conf.links && conf.links.owner;
+		const ro = conf.links && conf.links.readonly;
+		if (owner && ro) add("links", "手机链接", "ok", `主链接与只读链接都已生成（创建于 ${String(owner.createdAt).slice(0, 19)}）`);
+		else add("links", "手机链接", "warn", "链接还没生成", "跑 node guard.mjs pair 生成");
+	}
+
+	// 6) 设备与会话
+	{
+		const active = conf.sessions.filter((s) => s.expiresAt > now()).length;
+		if (conf.devices.length) add("devices", "已授权设备", "ok", `${conf.devices.length} 台设备 · ${active} 个在线会话`);
+		else add("devices", "已授权设备", "warn", "还没有设备配对过", "把主链接发到手机打开（或扫二维码）即可配对");
+	}
+	return { at: new Date().toISOString(), entry: url, upstream: conf.upstream, port: conf.port, steps };
+}
+
+async function cliDoctor() {
+	const r = await doctorSteps();
+	const icon = { ok: "✅", warn: "⚠️ ", fail: "❌" };
+	console.log("=== dsh-remote 逐环节体检 ===");
+	for (const s of r.steps) {
+		console.log(`${icon[s.status] || "·"} ${s.label}`);
+		console.log(`     ${s.detail}`);
+		if (s.hint && s.status !== "ok") console.log(`     ↳ ${s.hint}`);
+	}
+	const bad = r.steps.filter((s) => s.status === "fail").length;
+	const warn = r.steps.filter((s) => s.status === "warn").length;
+	console.log(`\n合计：${r.steps.length} 项 · 正常 ${r.steps.length - bad - warn} · 警告 ${warn} · 失败 ${bad}`);
+	console.log(`当前入口：${r.entry}`);
+	if (bad) console.log("先修失败项；大多数情况点 DSH 面板里的「启动 / 修复」即可。");
+}
+
 async function cliStatus() {
 	const state = tunnelState();
 	let upstreamOk = "未知";
@@ -1088,6 +1174,7 @@ if (cmd === "devices") { cliDevices(); process.exit(0); }
 if (cmd === "revoke") { cliRevoke(argv[1]); process.exit(0); }
 if (cmd === "print") { console.log(JSON.stringify(conf, null, 2)); process.exit(0); }
 if (cmd === "status") { await cliStatus(); process.exit(0); }
+if (cmd === "doctor" || cmd === "diag") { await cliDoctor(); process.exit(0); }
 if (cmd === "tunnel") {
 	const sub = argv[1] || "status";
 	if (sub === "up") {

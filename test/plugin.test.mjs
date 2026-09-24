@@ -193,10 +193,21 @@ console.log("\n=== 8. 链路自检与一键启动：/health 与 /start（真起�
 	check("守卫没跑时 /health 报 guard=false", h1.json?.guard === false, JSON.stringify(h1.json));
 	check("problems 明确指出守卫没运行", (h1.json?.problems || []).some((x) => /守卫/.test(x)), JSON.stringify(h1.json?.problems));
 	check("体检未通过时提示里带上守卫端口", h1.json?.guardPort === freePort, String(h1.json?.guardPort));
+	// 阶段检测：步骤要按链路顺序、每步带状态与说明
+	const ids = (h1.json?.steps || []).map((x) => x.id);
+	check("阶段检测按链路顺序给出全部环节",
+		ids.join(",") === "dsh,upstream,guard,tunnel,public,links,devices", ids.join(","));
+	check("每步都有 label/status/detail", (h1.json?.steps || []).every((x) => x.label && ["ok", "warn", "fail"].includes(x.status) && typeof x.detail === "string"));
+	check("步骤名是给人看的（含中文环节名）", (h1.json?.steps || []).some((x) => /守卫（鉴权层）/.test(x.label)) && (h1.json?.steps || []).some((x) => /公网隧道/.test(x.label)), JSON.stringify((h1.json?.steps || []).map((x) => x.label)));
+	check("守卫那一步被标为失败并带修法", (h1.json?.steps || []).find((x) => x.id === "guard")?.status === "fail" && !!(h1.json?.steps || []).find((x) => x.id === "guard")?.hint, JSON.stringify((h1.json?.steps || []).find((x) => x.id === "guard")));
+	check("DSH 本体那一步恒为正常（面板就跑在它里面）", (h1.json?.steps || []).find((x) => x.id === "dsh")?.status === "ok");
 
 	const s1 = await call("/dsh-remote/start", { method: "POST" });
 	check("/start 真的把守卫拉起来了", s1.json?.guard?.started === true, JSON.stringify(s1.json?.guard));
-	check("拉起后 /health 立即报 guard=true", (await call("/dsh-remote/health")).json?.guard === true);
+	const h2 = await call("/dsh-remote/health");
+	check("拉起后 /health 立即报 guard=true", h2.json?.guard === true);
+	check("拉起后守卫那一步变为正常", (h2.json?.steps || []).find((x) => x.id === "guard")?.status === "ok", JSON.stringify((h2.json?.steps || []).find((x) => x.id === "guard")));
+	check("/start 的返回里带体检结果（放在 health 键下，不与启动结果同名）", !!h2.json?.steps && !!s1.json?.health?.steps, JSON.stringify(Object.keys(s1.json || {})));
 	check("隧道被显式关掉时不硬拉，并说明原因", /显式关掉|tunnel down/.test(s1.json?.tunnel?.error || ""), JSON.stringify(s1.json?.tunnel));
 	const pid = s1.json?.guard?.pid;
 	check("/start 返回了守卫 PID（便于排查）", Number.isInteger(pid) && pid > 0, String(pid));
