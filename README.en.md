@@ -60,8 +60,9 @@ Prerequisites: **Node ≥ 20**; DSH installed and **started at least once** (so 
 
 ```bash
 # 1)+2) clone and install in one line (run it from inside the repo directory)
-git -c http.proxy=http://127.0.0.1:7897 clone https://github.com/laolin2000/dsh-remote.git && cd dsh-remote && node bin/setup.mjs
+git clone https://github.com/laolin2000/dsh-remote.git && cd dsh-remote && node bin/setup.mjs
 #   narrow it with --no-tunnel / --no-guard / --dry-run; equivalent script: npm run setup
+#   if git cannot reach GitHub, add a proxy to the clone: git -c http.proxy=http://127.0.0.1:<your port> clone …
 
 # 3) restart DSH once (the plugin tree is not hot-reloaded) -> the "手机链接" button appears,
 #    bottom-right, directly above the EAC monitor button
@@ -178,6 +179,11 @@ Audit: `$DSH_HOME/remote/audit.jsonl` (append-only JSONL). Log: `guard.log`.
   prints it at the top. A read-only device gets no control panel (that data belongs to the owner) but does get a
   "只读设备 / read-only" badge whose popup spells out what is viewable and what will be a 403 — otherwise
   "was that write actually blocked?" is invisible in the UI.
+- **The read-only boundary is measured, not assumed**: all 54 real DSH RPC methods were probed one by one. The 18
+  that pass are all read-semantics (`*.list` / `*.history` / `*.describe` / `*.read` / `*.models` / `attachment`…);
+  the other 45 — including `session.prompt`, `workspace.delete`, `credentials.set`, `goal.*`, `subagent.prompt` —
+  are all 403, and plugin routes like the sidebar file tree or the command list are denied by default too, so a
+  read-only seat cannot browse files either.
 - **CSRF**: `SameSite=Lax` plus an `Origin` check.
 - **Revocable**: `revoke` deletes the device and all its sessions immediately, no restart needed.
 
@@ -196,7 +202,7 @@ Audit: `$DSH_HOME/remote/audit.jsonl` (append-only JSONL). Log: `guard.log`.
   unreachable upstream produces an explicit message; every rejection lands in the audit log.
 - **Hop-by-hop diagnosis**: the panel's "连接体检（逐环节）" lists upstream → guard → tunnel → public reachability →
   phone links → devices, each with正常/注意/失败 plus the reason and the fix (failures tell you what to click).
-  The CLI runs the same checks: `node guard/guard.mjs doctor`.
+  The CLI runs the same checks: `node guard/guard.mjs doctor` (alias: `diag`).
 
 ## Deployment
 
@@ -240,16 +246,38 @@ guard/guard.mjs      the guard: auth, role enforcement, long-lived links, QR, tu
 guard/qr.mjs         built-in QR encoder (byte mode / versions 1–10 / L-M-Q-H / best-mask selection, zero deps)
 guard/ui.js          the control panel the guard injects into phone-side pages
 plugin/              DSH UI plugin (desktop "phone link" panel + control-plane routes)
-bin/                 desktop helper scripts (show / reset / QR / copy the link)
-test/                tests: selftest(125) qr(46) panel.dom(68) plugin(51) bin(15) install(28) setup(31) tunnel(11)
+bin/setup.mjs        one-command install: plugin + find cloudflared + start guard and tunnel + print the link and QR
+bin/install-plugin.mjs  plugin install/uninstall only (copy, append the mount block, update the plugin list, backup first)
+bin/phone-link.mjs   desktop helper for fetching the link (.cmd popup entry / .vbs silent entry)
+test/                tests: selftest(139) qr(46) panel.dom(73) plugin(55) bin(15) install(28) setup(31) docaudit(21) tunnel(11)
 docs/deploy/         keep-alive templates for Windows / macOS / Linux
 ```
+
+The guard's own endpoints (used by both panels and the CLI; all but `health` require a paired device, and the control
+plane additionally requires owner):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /__guard/health` | liveness probe, unauthenticated (used by watchdogs) |
+| `POST /__guard/pair` | exchange a one-time pairing code for a device |
+| `GET /__guard/link[?role=][&reset=1]` | one link / rotate |
+| `GET /__guard/links` | both current long-lived links |
+| `GET /__guard/devices` | paired device list |
+| `POST /__guard/revoke` | revoke a device (immediate) |
+| `POST /__guard/reset` | rotate both links (old ones die at once) |
+| `GET /__guard/qr[?role=]` | QR code (SVG) for the current link |
+| `GET /__guard/doctor` | per-hop health (upstream → guard → tunnel → public → links → devices) |
+| `GET /__guard/whoami` | which device you are and what role it has (any paired device may ask) |
+| `GET /__guard/status` | runtime state: devices, live sessions, tunnel process and restarts |
+| `POST /__guard/logout` | drop the local device's session (i.e. sign out) |
+| `GET /__guard/ui.js` | the panel script itself (the guard injects it into the page) |
 
 Running the tests:
 
 ```bash
-npm test              # guard + QR + plugin + desktop helper (no third-party dependencies)
+npm test              # guard + QR + plugin + desktop helper + documentation audit (no third-party dependencies)
 npm run test:panel    # real-DOM panel behaviour (needs: npm i --no-save jsdom)
+npm run test:docs     # documentation audit: links, docs<->code cross-refs, counts, leak scan
 npm run test:tunnel   # live cloudflared self-heal / shutdown check (~1–2 min, skips if absent)
 ```
 
@@ -268,14 +296,32 @@ change anything.
 5. **Cookies travel in the clear over plain HTTP**: always use an https tunnel externally (the `Secure` flag only
    takes effect over https).
 
-**Secure by default**: binds `127.0.0.1` only; with no paired devices, everything except the pairing page and the
-health endpoint is refused (fail-closed).
+**Secure by default**: binds `127.0.0.1` only; for requests **arriving through the tunnel**, everything except the
+pairing page and the health endpoint is refused (fail-closed).
 
-## One trap worth knowing
+The one exception is **direct loopback access**: a loopback request without tunnel headers is treated as owner
+(that is how the desktop DSH page works without pairing). So **never forward public traffic verbatim to
+`127.0.0.1:8443`** — plain TCP reverse proxies and `ssh -L` do exactly that, carry no tunnel headers, and would be
+treated as the local machine, i.e. handed owner rights. Use a tunnel that adds `Cf-*` / `X-Forwarded-*` headers,
+such as cloudflared.
 
-If your **old tunnel script** points the tunnel straight at the middle layer (e.g. `--url http://127.0.0.1:3081`),
-it **bypasses the guard** — and your public entry is naked again. Point the tunnel at the guard's port (8443 by
-default): use `guard tunnel up`, or change the old script's target port to 8443.
+## Three traps worth knowing
+
+**Trap 1: the middle layer has no authentication of its own, and it may be listening on every interface.**
+Measured on this machine: `netstat` shows the middle layer on `0.0.0.0:3081`, so any device on the same LAN
+(measured: LAN IP → HTTP 200, a 50 KB DSH page) — and on a Tailscale network — reaches DSH with **no credentials**;
+the middle layer also rewrites `Host` back to loopback, so it even defeats DSH's own origin fence for them.
+Bind the middle layer to loopback (or give it its own auth); keep the only public entry on the guard's 8443.
+
+**Trap 2: pointing an old tunnel script straight at the middle layer leaves the public entry naked.**
+If your **old tunnel script** points the tunnel at the middle layer (e.g. `--url http://127.0.0.1:3081`),
+it **bypasses the guard**. Point the tunnel at the guard's port (8443 by default): use `guard tunnel up`, or change
+the old script's target port to 8443.
+
+**Trap 3: one guard per state directory.**
+Start a second one (say a hand-started guard while an autostart entry also exists) and it now **fails loudly and
+exits**, telling you to change the port and the state directory. Do not work around that message: two guards clobber
+each other's `tunnel.json` and can each spawn their own cloudflared, so the domain keeps changing.
 
 ## Verification log (every feature was exercised, not eyeballed)
 
@@ -291,10 +337,14 @@ Testing turned up these **real** defects — all fixed:
 | Desktop helper `--reset --role readonly` | `--reset` was silently ignored | pass it through, plus a bin test |
 | Read-only was purely nominal | a phone that had once opened the owner link (30-day cookie) ignored the read-only link entirely: "already signed in, let it through" meant the server kept authorising writes as owner (user-reported) | a link token now beats an existing session (a valid token always re-issues the cookie); added `/__guard/whoami` and a "read-only device" badge so "which link am I on" is visible in the UI, with a DOM regression test |
 | Built-in QR encoder | ① format-info cells weren't marked as function modules before data placement → the codeword stream had holes and scanners could not decode it at all; ② mask 2 tested the row instead of the column; ③ the N4 penalty formula differed from the standard, so auto mask selection chose the wrong mask | all three fixed, then verified module-by-module against a reference implementation: 1332 combinations (text × version × ECC × mask) all identical, plus end-to-end decoding with jsqr |
+| A second guard on the same port | after `EADDRINUSE` the error was swallowed by `uncaughtException` and the **process stayed alive**: it looked like it was running while serving nothing, and 10 s later it would touch the tunnel in the same state directory (reproduced — the stray process lived for minutes) | `server.on("error")` logs a clear cause and **exits non-zero**, pointing at "one guard per state directory" and how to change port/state dir; regression test added |
+| `pair --code --name X` | the name only landed in the pairing record and was never used for the device: with an empty form name the device was called "设备-3", silently dropping the operator's intent (measured against the live guard) | name priority is now "pairing record > phone form > auto-number", with tests covering both paths |
+| `--port` with no value | when the value was eaten by the next flag it silently fell back to the default (measured: thought the port had changed, it was still 8443) — invisible while debugging | missing values now warn loudly (printed by the CLI, written to the log in serve mode) |
+| The docs themselves drifted | ① the clone command carried a **machine-local proxy port**, so anyone copying it would fail; ② the plugin `package.json` still advertised "one-time token links" (they have been long-lived for a while); ③ plugin version 0.1.0 vs the 0.3.0 package; ④ the layout section still said 125/68/51 tests; ⑤ the guard's own 12 endpoints and the `diag` alias were documented nowhere | all corrected, and these checks are now a re-runnable `node test/docaudit.mjs` (internal links/paths/scripts/versions/leak scan + route/CLI ↔ docs cross-reference) |
 
 What the suites cover:
 
-- **guard** — `test/selftest.mjs` (133): fail-closed, pairing codes, long-lived link semantics, **link token beats an
+- **guard** — `test/selftest.mjs` (139): fail-closed, pairing codes, long-lived link semantics, **link token beats an
   existing session**, read-only boundaries, owner control plane, `whoami` identity, WS allow-list, Origin/CSRF,
   loopback-trusted vs tunnel-untrusted, page injection + appearance keeper, QR endpoint, reset endpoint, tunnel
   intent, audit.
@@ -307,6 +357,9 @@ What the suites cover:
 - **desktop helper** — `test/bin.test.mjs` (15): temp DSH_HOME, "default leaves the link alone" semantics.
 - **tunnel** — `test/tunnel.test.mjs` (11): real cloudflared — domain acquired and written to urlFile, self-heal in
   6–45 s after a kill, and no resurrection 24 s after `down`.
+- **documentation audit** — `test/docaudit.mjs` (21): every internal link/path/command in the docs really exists,
+  scripts and versions agree, routes and CLI subcommands cross-reference the docs both ways, zh/en structure is
+  aligned, the test counts add up, and no runtime credential or machine-local path leaks into the repo.
 
 ## Roadmap
 

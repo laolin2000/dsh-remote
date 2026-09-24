@@ -1,7 +1,7 @@
 {
   "name": "dsh-remote-panel",
-  "version": "0.1.0",
-  "description": "DSH 界面内的「手机链接」面板：生成/重置带一次性 token 的手机链接、查看与吊销已授权设备。配套 dsh-remote 守卫使用。",
+  "version": "0.3.0",
+  "description": "DSH 界面内的「手机链接」面板：显示/复制/重置长期有效的手机链接与只读链接、显示当前设备身份与角色、查看与吊销已授权设备、逐环节体检与一键修复。配套 dsh-remote 守卫使用。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

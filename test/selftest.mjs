@@ -109,8 +109,10 @@ function runCli(args) {
 }
 async function pairingCode(role) {
 	const out = await runCli(["pair", "--code", "--role", role, "--name", role === "owner" ? "手机" : "iPad"]);
-	return (out.match(/([0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4})/) || [])[1] || null;
+	return codeOf(out);
 }
+/** 从 CLI 输出里抓一次性配对码 */
+const codeOf = (out) => (out.match(/([0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4})/) || [])[1] || null;
 async function linkToken(role) {
 	const out = await runCli(["pair", "--role", role]);
 	const urls = out.match(/https?:\/\/\S+\?t=[A-Za-z0-9_-]+/g) || [];
@@ -148,6 +150,14 @@ console.log("\n=== 2. 一次性配对码（临时给一台设备用）===");
 	const r2 = await call("/__guard/pair", { method: "POST", body: { code: roCode, name: "iPad" } });
 	jar.readonly = r2.setCookie.split(";")[0];
 	check("第二个设备拿到 readonly 角色", JSON.parse(r2.text).device?.role === "readonly");
+
+	// 设备名优先级：配对码里指定的名字必须生效（手机端表单留空也不该丢）
+	const namedCode = codeOf(await runCli(["pair", "--code", "--role", "readonly", "--name", "码里指定的名字"]));
+	const r3 = await call("/__guard/pair", { method: "POST", body: { code: namedCode } });      // 表单没填名字
+	check("配对码里指定的设备名生效（留空表单时不再变成「设备-N」）", JSON.parse(r3.text).device?.name === "码里指定的名字", r3.text.slice(0, 120));
+	const anonCode = codeOf(await runCli(["pair", "--code", "--role", "readonly"]));
+	const r4 = await call("/__guard/pair", { method: "POST", body: { code: anonCode, name: "手机端自己起的" } });
+	check("配对码没指定名字时，手机端表单填的名字生效", JSON.parse(r4.text).device?.name === "手机端自己起的", r4.text.slice(0, 120));
 }
 
 console.log("\n=== 3. 只读设备：读得到、写不动（服务端强制）===");
@@ -460,6 +470,28 @@ console.log("\n=== 16. 逐环节体检（doctor）===");
 	const cli = await runCli(["doctor"]);
 	check("CLI doctor 打印逐环节表格", /逐环节体检/.test(cli) && /上游/.test(cli) && /守卫/.test(cli), cli.slice(0, 120));
 	check("CLI doctor 末尾给出合计", /合计：\d+ 项/.test(cli), cli.slice(-160));
+}
+
+console.log("\n=== 17. 重复启动与参数缺值（都会静默坑人）===");
+{
+	// 第二个守卫占同一端口：必须**明确报错并退出**。
+	// 踩过的坑（实测）：以前 EADDRINUSE 被 uncaughtException 吞掉，进程继续活着 ——
+	// 看起来在跑、其实一个请求都不服务，10 秒后它的隧道守护还会去动同一个状态目录里的隧道。
+	const second = await new Promise((resolve) => {
+		const p = spawn(process.execPath, [GUARD, "serve"], { env, stdio: ["ignore", "pipe", "pipe"] });
+		let out = "";
+		p.stdout.on("data", (c) => { out += String(c); });
+		p.stderr.on("data", (c) => { out += String(c); });
+		const timer = setTimeout(() => { try { p.kill(); } catch {} resolve({ code: "timeout", out }); }, 8000);
+		p.on("close", (code) => { clearTimeout(timer); resolve({ code, out }); });
+	});
+	check("第二个守卫占同一端口 → 非零退出（不会静默活着）", second.code === 1, `退出码 ${second.code}`);
+	check("退出原因写明端口被占用、并给出换端口/换状态目录的做法", /已被占用/.test(second.out) && /DSH_REMOTE_DIR/.test(second.out), second.out.slice(-200));
+
+	// --port 后面没跟值（老写法 ./guard --port --bind x）：以前静默按默认值跑，现在要有告警
+	const warn = await runCli(["print", "--port"]);
+	check("参数缺值时明确告警（不再静默忽略）", /缺少值/.test(warn), warn.slice(0, 160));
+	check("告警只针对缺值参数，不阻止其它命令运行", /\{/.test(warn), warn.slice(0, 80));
 }
 
 guard.kill();

@@ -429,8 +429,9 @@
     var card = el("div", CSS.card);
     var who = el("div", null, "当前设备：" + ((me && me.name) || "只读设备") + "（只读权限）");
     card.appendChild(who);
-    card.appendChild(el("div", CSS.sub + ";" + CSS.warn, "能看：会话、图片、文件树、目录列表、模型列表。"));
+    card.appendChild(el("div", CSS.sub + ";" + CSS.warn, "能看：会话与图片、目录列表、模型列表、事件流。"));
     card.appendChild(el("div", CSS.sub, "会被拒：发指令、取消任务、改设置、触控注入……一律由服务端 403 拦下——不是界面上藏了按钮，是服务器不放行。"));
+    card.appendChild(el("div", CSS.sub, "侧栏的文件树、命令列表这类插件路由也在默认拒绝里（一样 403），别指望只读席位能浏览文件。"));
     card.appendChild(el("div", CSS.sub, "需要全权操作，请用主设备链接（面板「复制」那条）重新打开本页。"));
     panel.appendChild(card);
 

@@ -165,8 +165,16 @@ function applyCliOverrides() {
 	];
 	const applied = [];
 	for (const [name, cast, key] of map) {
+		if (!argv.includes("--" + name)) continue;
 		const v = flag(name);
-		if (v === "") continue;
+		if (v === "") {
+			// `--port --bind 127.0.0.1` 这种"值被下一个参数吃掉"的写法以前是静默忽略、按默认值跑，
+			// 排查时完全看不出来（实测踩到：以为换了端口，其实还在 8443）。
+			const warn = `参数 --${name} 缺少值，已忽略（会退回 ${key || name} 的当前/默认值）`;
+			log(warn);
+			if (cmd !== "serve") console.log("⚠️  " + warn);
+			continue;
+		}
 		const target = key || name;
 		conf[target] = cast(v);
 		applied.push(`${target}=${conf[target]}`);
@@ -440,7 +448,10 @@ async function serveGuardEndpoint(req, res, urlPath) {
 		const token = makeDeviceToken();        // 令牌只在这一次返回给客户端；服务端只留哈希
 		const device = {
 			id: crypto.randomUUID(),
-			name: String(body.name || "").slice(0, 40) || `设备-${conf.devices.length + 1}`,
+			// 名字的优先级：**配对码里指定的** > 手机端表单里填的 > 自动编号。
+			// （踩过的坑：`pair --code --name iPhone` 的名字只写进了配对码记录、没人用，
+			//   手机端表单留空时设备就叫「设备-3」——命令行指定的意图被静默丢掉。）
+			name: String(entry.name || body.name || "").slice(0, 40) || `设备-${conf.devices.length + 1}`,
 			role: entry.role === "readonly" ? "readonly" : "owner",
 			tokenHash: sha(token),
 			createdAt: new Date().toISOString(),
@@ -1242,6 +1253,19 @@ if (cmd === "tunnel") {
 }
 
 saveConf();
+server.on("error", (e) => {
+	// 监听失败必须**明确报错并退出**。一个"绑定失败但进程还活着"的守卫是最坏的状态：
+	// 它看起来在运行，实际一个请求都不服务；而 10 秒后的隧道守护还会去动同一个状态目录里的隧道，
+	// 两个守卫互相覆盖 tunnel.json，可能各自拉起一个 cloudflared（域名跟着乱变）。
+	// （踩过的坑：实测第二个守卫拿到 EADDRINUSE 后被 uncaughtException 吞掉，进程继续活着。）
+	if (e?.code === "EADDRINUSE") {
+		log(`启动失败：${conf.bind}:${conf.port} 已被占用——多半是已经有一个守卫在跑。同一个状态目录只该有一个守卫。`);
+		log("要再跑一个的话，必须同时换端口与状态目录：--port 8444 --bind 127.0.0.1（并用 DSH_REMOTE_DIR 指向另一个目录）。已退出。");
+	} else {
+		log(`启动失败：无法监听 ${conf.bind}:${conf.port} —— ${e?.message || e}。已退出。`);
+	}
+	try { process.exit(1); } catch { /* 退出失败就不再管 */ }
+});
 server.listen(conf.port, conf.bind, () => {
 	log(`dsh-remote guard 已启动：http://${conf.bind}:${conf.port} → ${conf.upstream}`);
 	log(`设备 ${conf.devices.length} 台（owner ${conf.devices.filter((d) => d.role === "owner").length} / 只读 ${conf.devices.filter((d) => d.role === "readonly").length}）`);
