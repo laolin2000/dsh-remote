@@ -17,11 +17,14 @@ read-only devices **can look, but not touch**.
 
 All three facts below are DSH's own behavior, not our assumptions:
 
-| Fact | Where it comes from |
-|---|---|
-| DSH **refuses** to expose its UI to the network: `dsh --host 0.0.0.0` fails outright with "would expose remote code execution to the network"; `@deepseek-ai/dsh-host-webserver` ships **no TLS, no auth, no origin policy** | DSH's own error text and package docs |
-| DSH's `/api` is a **full RPC surface that drives a local agent**: `session.prompt` makes the agent run commands, `workspace.delete` deletes sessions, `session.cancel` aborts tasks | Reading the route table in `@deepseek-ai/dsh-host-apiproxy` |
-| DSH's `/api` has a **trusted-origin fence**: `Host` must be loopback or allow-listed, and `Origin` must match | `isTrustedApiRequest` in `@deepseek-ai/dsh-client-connection` |
+1. **DSH refuses to expose its UI to the network.** `dsh --host 0.0.0.0` fails outright with
+   "would expose remote code execution to the network", and `@deepseek-ai/dsh-host-webserver` ships no TLS,
+   no auth and no origin policy. (Source: DSH's own error text and package docs)
+2. **DSH's `/api` is a full RPC surface that drives a local agent.** `session.prompt` makes the agent run
+   commands, `workspace.delete` deletes sessions, `session.cancel` aborts tasks.
+   (Source: the route table in `@deepseek-ai/dsh-host-apiproxy`)
+3. **DSH's `/api` has a trusted-origin fence.** `Host` must be loopback or allow-listed, and `Origin` must match.
+   (Source: `isTrustedApiRequest` in `@deepseek-ai/dsh-client-connection`)
 
 So exposing DSH directly means **handing over control of the machine**, yet using it remotely requires
 adding the missing authentication layer yourself — and **without patching DSH**, whose security stance is deliberate.

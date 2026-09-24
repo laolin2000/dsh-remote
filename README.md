@@ -15,11 +15,13 @@
 
 三条都是 DSH 的既有行为，不是我们的假设：
 
-| 事实 | 出处 |
-|---|---|
-| DSH **拒绝**把界面开放到网络：`dsh --host 0.0.0.0` 直接报错，理由是 "would expose remote code execution to the network"；`@deepseek-ai/dsh-host-webserver` 明确**不提供 TLS、认证或来源策略** | DSH 官方错误文案与包文档 |
-| DSH 的 `/api` 是一整套**能操作本机 agent** 的 RPC：`session.prompt` 能让 agent 跑命令、`workspace.delete` 能删会话、`session.cancel` 能中止任务 | 读 `@deepseek-ai/dsh-host-apiproxy` 的路由表 |
-| DSH 的 `/api` 有一道**可信来源 fence**：`Host` 必须是回环或在可信名单里，`Origin` 必须同源 | `@deepseek-ai/dsh-client-connection` 的 `isTrustedApiRequest` |
+1. **DSH 拒绝把界面开放到网络。** `dsh --host 0.0.0.0` 会直接报错，原文是
+   "would expose remote code execution to the network"；`@deepseek-ai/dsh-host-webserver` 也明确不提供
+   TLS、认证或来源策略。（出处：DSH 官方错误文案与包文档）
+2. **DSH 的 `/api` 是一整套能操作本机 agent 的 RPC。** `session.prompt` 能让 agent 跑命令、
+   `workspace.delete` 能删会话、`session.cancel` 能中止任务。（出处：`@deepseek-ai/dsh-host-apiproxy` 的路由表）
+3. **DSH 的 `/api` 有一道可信来源围栏。** `Host` 必须是回环或在可信名单里，`Origin` 必须同源。
+   （出处：`@deepseek-ai/dsh-client-connection` 的 `isTrustedApiRequest`）
 
 所以：**直接暴露 = 把整台电脑的控制权交出去**；而想远程用，就必须自己补上"鉴权"这一层，并且**不能改 DSH 本身**（它的安全立场是刻意的）。
 
