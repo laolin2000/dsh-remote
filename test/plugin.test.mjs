@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -222,6 +222,25 @@ console.log("\n=== 8. 链路自检与一键启动：/health 与 /start（真起�
 	check("再次 /start 仍能把它拉回来（可反复自愈）", s3.json?.guard?.started === true, JSON.stringify(s3.json?.guard));
 	if (s3.json?.guard?.pid) spawn("taskkill", ["/PID", String(s3.json.guard.pid), "/T", "/F"], { stdio: "ignore" });
 	await new Promise((r) => setTimeout(r, 800));
+}
+
+// 兜底清理：把测试期间可能残留的临时端口监听进程扫掉。
+// 为什么要它：守卫是 detached 进程，只要有一条路径漏掉 pid（崩溃、提前 return），它就会一直留着
+//（实测踩到：跑完测试在系统里攒了 5 个游离守卫）。只看测试用的临时端口段，不碰真实端口。
+{
+	let swept = 0;
+	try {
+		const out = execSync("netstat -ano", { encoding: "utf8" });
+		for (const line of out.split("\n")) {
+			if (!line.includes("LISTENING")) continue;
+			const m = line.match(/:(\d+)\s+\S+\s+(\d+)\s*$/);
+			if (!m) continue;
+			const port = Number(m[1]);
+			if (port < 49152 || port > 65535) continue;
+			try { execSync(`taskkill /PID ${m[2]} /T /F`, { stdio: "ignore" }); swept++; } catch { /* 已退出 */ }
+		}
+	} catch { /* netstat 不可用就跳过 */ }
+	if (swept) console.log(`\n（兜底清理：停掉了 ${swept} 个临时端口上的残留进程）`);
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

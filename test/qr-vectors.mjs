@@ -1,12 +1,13 @@
 // 黄金向量：由参考实现（npm 的 qrcode 包）生成，只用于本测试，不是运行时依赖。
-// 生成方式见文件末尾注释；矩阵按「行优先、每 4 位一个十六进制字符」打包。
+// 矩阵按「行优先、每 4 位一个十六进制字符」打包（末组右侧补 0）。
+// 注意：向量里的链接一律是**合成占位**，不要写入真实入口域名或 token。
 export const VECTORS = [
 	{ name: "短文本(自动版本/纠错)", text: "A", version: 1, ecc: "M", mask: "auto", size: 21,
 		hex: "fe93fc17d06e8abb75b5dba72ec12d07faafe01b00b73a5acaf233b41b6827c9e492005927fa65105836ba6f8dd79faeaac1044a5fe8480" },
 	{ name: "普通文本", text: "hello dsh", version: 1, ecc: "M", mask: "auto", size: 21,
 		hex: "fe6bfc11906ebabb75f5dba8aec17907faafe01400be33e622c76e8b9d61face68a08045e7f840d05c2eba910dd4fe2eaac904bdcfec890" },
-	{ name: "真实手机链接", text: "https://crafts-jennifer-examines-dad.trycloudflare.com/?t=7KYQzRfaE3bFp3dT_1E5bAXJNHRgWZkhaKobg2pEm3Q", version: 6, ecc: "M", mask: "auto", size: 41,
-		hex: "fecbd125bfc16b11f4106e88f650cbb757401e85dba401ebd2ec1229e02d07faaaaaaafe01ffc30d00b749f41725e655ba84d590cf6bd980d487d07c1315bc5cbf717e6cda45c925fa14e214c3017b085678a345abd709eace8ca3e930892a3eb381b09d609e67ef8900632cc450db5fdf19c3a60344ba4b41f39387a1cafc101c77ba7ccb80c2f63bf97d2601817785bfb2f435c34d84d69fb258d1db7b90209fa26a5f7faaa8ffff0071fb85c7ffbd48592b5050f93a511ba641c78ffdd56a86e866eac3f2265f04b30a315afeacee43c30" },
+	{ name: "真实长度的手机链接（合成占位）", text: "https://demo-entry-placeholder.trycloudflare.com/?t=DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", version: 6, ecc: "M", mask: "auto", size: 41,
+		hex: "fe1aec1abfc1246358106ea97b06abb753b1d605dbab1b90baec16e8758507faaaaaaafe01c73e5600be69d3f43e32d21fe7edbcd0020e220f2c16d37ba16dbebe516309d420d6e8a8cc3ac100883e48356aeb0806b0520847160d5eebe689ac0211b6c18359ae203aeb0089e8e6ae5dec1ff4b1c22082b17830b857ca5275083aaebc93aebbb222a722121d40f53babf5682e5065ac7561c66a38765ac19172357835da9b2d96b0fe0079b60d46ff84b1ac2a1055ed83719bad204b0f8dd7a78872aeea9e3ae5e104429b339afef5b275780" },
 	{ name: "中文内容", text: "手机链接：扫描进入 DSH", version: 3, ecc: "M", mask: "auto", size: 29,
 		hex: "feb70bfc15fa506eab94bb743675dbae512ec1031d07faaaafe00148009fafc4bdaad14b23f094a378663962b166d372e01f033eac0152aada63ae112fde2243f97d95b1559abb171d284efe80625443faf5ebb0549d16baeccfa5d6f573ae8a474f049b5c1febbc640" },
 	{ name: "指定 v10/H/mask3", text: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", version: 10, ecc: "H", mask: 3, size: 57,

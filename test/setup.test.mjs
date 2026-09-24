@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -39,6 +39,20 @@ const guardJson = path.join(STATE, "guard.json");
 const pluginDir = path.join(PROFILE, "node_modules", "dsh-remote-panel");
 const portFree = async (port) => { try { await fetch(`http://127.0.0.1:${port}/__guard/health`, { signal: AbortSignal.timeout(800) }); return false; } catch { return true; } };
 async function killGuard(pid) { if (!pid) return; try { spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" }); } catch { try { process.kill(pid); } catch {} } await new Promise((r) => setTimeout(r, 800)); }
+/** 兜底清理：按端口反查监听进程并杀掉。
+ *  为什么要它：守卫是 detached 进程，只要有一条路径漏掉 pid（崩溃、提前 return），
+ *  它就会一直留在系统里（实测踩到：跑完测试攒了 5 个游离守卫）。 */
+function sweepPort(port) {
+	try {
+		const out = execSync("netstat -ano", { encoding: "utf8" });
+		const pids = new Set();
+		for (const line of out.split("\n")) {
+			if (line.includes("LISTENING") && line.includes(":" + port + " ")) pids.add(line.trim().split(/\s+/).pop());
+		}
+		for (const pid of pids) { try { execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore" }); } catch { /* 已退出 */ } }
+		return pids.size;
+	} catch { return 0; }
+}
 
 // 用系统分配的空闲端口：避免与上一次跑的遗留实例冲突（踩过：崩溃的测试留下守卫占着固定端口）
 const PORT = await new Promise((resolve) => {
@@ -110,6 +124,7 @@ console.log("\n=== 3b. cloudflared 发现顺序：环境变量 / 上次记住的
 	const r2 = await run(["--profile", PROFILE, "--port", String(PORT), "--no-tunnel"]);
 	check("再次运行时复用已记住的路径（无需再传参数）", r2.out.includes("fake-cloudflared.exe"), r2.out.split("\n").filter((l) => l.includes("cloudflared")).join(" | ").slice(0, 160));
 	await killGuard(Number(String(report(r2.out)?.guard || "").replace("pid ", "")));
+	sweepPort(PORT);                                  // 兜底：按端口再扫一遍
 }
 
 console.log("\n=== 4. 守卫引用的是仓库里的脚本（路径可移植）===");
@@ -120,6 +135,8 @@ console.log("\n=== 4. 守卫引用的是仓库里的脚本（路径可移植）=
 	check("插件挂载段里的 guardPath 指向本仓库的 guard.mjs", patch.includes("guardPath:") && patch.includes("/guard/guard.mjs"));
 }
 
+const swept = sweepPort(PORT);                    // 兜底：按端口再扫一遍（detached 进程最容易漏）
+check("测试结束时端口上没有残留守卫", swept === 0, `清理了 ${swept} 个`);
 fs.rmSync(BASE, { recursive: true, force: true });
 console.log(`\n================ 结果：${pass} 通过 / ${fail} 失败 ================`);
 process.exit(fail ? 1 : 0);
