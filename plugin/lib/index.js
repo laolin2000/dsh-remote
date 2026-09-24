@@ -41,6 +41,15 @@ function ownerAllowed(req) {
 	return isLoopbackHost(req);
 }
 
+/** 这台设备是谁、什么角色：守卫转发时会带上这两个头，本机直连则没有。 */
+function viewer(req) {
+	const role = String(req.headers["x-dsh-remote-role"] || "owner");
+	const raw = String(req.headers["x-dsh-remote-device"] || "");
+	let name = "本机(直连)";
+	if (raw) { try { name = decodeURIComponent(raw); } catch { name = raw; } }
+	return { name, role: role === "owner" ? "owner" : "readonly" };
+}
+
 function runGuard(guardPath, args) {
 	return new Promise((resolve) => {
 		if (!guardPath || !fs.existsSync(guardPath)) {
@@ -250,6 +259,13 @@ export function apply(ctx, config) {
 			// 逐段体检：守卫 / 隧道 / 上游（面板据此告诉用户"哪一段没起来"）
 			if (pathname === "/dsh-remote/health" && method === "GET") {
 				json(res, 200, { ok: true, ...(await chainHealth(String(req.headers.host || ""))) });
+				return;
+			}
+
+			// 这台设备是谁、什么角色：面板顶部显示身份用（多设备/多链接下"我在用哪条"是排查第一问）
+			if (pathname === "/dsh-remote/whoami" && method === "GET") {
+				const me = viewer(req);
+				json(res, 200, { ok: true, ...me, readonly: me.role !== "owner" });
 				return;
 			}
 

@@ -352,6 +352,7 @@ function redeemLongLivedLink(req, res, token, urlPath) {
 		};
 		conf.devices.push(device);
 	}
+	conf.sessions = conf.sessions.filter((s) => s.expiresAt > now());   // 长期链接能反复打开：顺手清掉过期会话，别让状态文件一直长
 	const sid = makeSessionId();
 	conf.sessions.push({ id: sid, deviceId: device.id, createdAt: now(), expiresAt: now() + conf.sessionDays * 86400_000 });
 	saveConf();
@@ -391,6 +392,7 @@ function redeemLink(req, res, token, urlPath) {
 	const token2 = makeDeviceToken();
 	device.tokenHash = sha(token2);
 	conf.devices.push(device);
+	conf.sessions = conf.sessions.filter((s) => s.expiresAt > now());
 	const sid = makeSessionId();
 	conf.sessions.push({ id: sid, deviceId: device.id, createdAt: now(), expiresAt: now() + conf.sessionDays * 86400_000 });
 	saveConf();
@@ -489,6 +491,22 @@ async function serveGuardEndpoint(req, res, urlPath) {
 			const js = fs.readFileSync(path.join(SELF_DIR, "ui.js"), "utf8");
 			send(res, 200, "application/javascript; charset=utf-8", js);
 		} catch { send(res, 500, "text/plain; charset=utf-8", "ui.js 缺失"); }
+		return true;
+	}
+
+	// 这台设备是谁、什么角色：任何已配对设备都能问（面板据此显示身份徽章）。
+	// 为什么需要：只读设备看不到面板（控制面 403），于是"为什么我的写入没生效"无从判断；
+	// 有了它，手机端也能一眼看到自己是「只读设备 · 只读」。
+	if (urlPath === "/__guard/whoami") {
+		const auth = resolveDevice(req) || (isLocalTrusted(req) ? { device: { name: "本机(直连)", role: "owner" }, via: "local" } : null);
+		if (!auth) {
+			audit({ event: "deny", reason: "whoami-unauthenticated", ip: req.socket.remoteAddress });
+			send(res, 401, "application/json; charset=utf-8", JSON.stringify({ ok: false, error: "未配对" }));
+			return true;
+		}
+		send(res, 200, "application/json; charset=utf-8", JSON.stringify({
+			ok: true, name: auth.device.name, role: auth.device.role, via: auth.via, readonly: auth.device.role !== "owner"
+		}));
 		return true;
 	}
 
@@ -786,10 +804,16 @@ function handle(req, res) {
 	// 链接带 token：/?t=<token> —— 先换 cookie 再重定向掉 token
 	const linkToken = query.get("t");
 	if (linkToken) {
-		if (resolveDevice(req)) { send(res, 302, "text/plain; charset=utf-8", "已登录", { location: urlPath || "/" }); return; }
+		// token **优先于已有会话**：它带着"这台设备以什么身份进来"的明确指令。
+		// 踩过的坑（实测）：手机浏览器里先开过 owner 链接，30 天 cookie 还在；
+		// 旧逻辑到这里是「已登录就直接放行」，只读链接被无声忽略 ——
+		// 服务器继续按 owner 放行写入，表现就是"用只读链接写入却没被拒绝"。
 		if (redeemLongLivedLink(req, res, linkToken, urlPath || "/")) return;   // 长期链接（可重复用）
 		if (redeemLink(req, res, linkToken, urlPath || "/")) return;           // 一次性配对码链接
-		log(`链接 token 无效或已作废：${String(linkToken).slice(0, 6)}…`);
+		const existing = resolveDevice(req);
+		audit({ event: "link", result: "bad-token", device: existing?.device?.name, ip: req.socket.remoteAddress });
+		log(`链接 token 无效或已作废：${String(linkToken).slice(0, 6)}…${existing ? "（沿用已有会话）" : ""}`);
+		if (!existing) { denyHtml(res, 401, "这条链接无效或已被重置：请重新生成链接后再打开"); return; }
 	}
 
 	// 本机直连（回环且无隧道痕迹）等同 owner —— 桌面 DSH 页面靠这条兜底

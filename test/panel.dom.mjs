@@ -57,6 +57,12 @@ function makeFetch({ ownerVisible = true, calls = [], health = null, healthFails
 		const raw = (text, ctype = "text/plain", status = 200) => ({ ok: status < 400, status, json: async () => { throw new Error("not json"); }, text: async () => text, headers: { get: () => ctype } });
 		// 守卫注入版（/__guard/*）
 		if (p.startsWith("/__guard/")) {
+			// whoami 是**任何**已配对设备都能问的：只读设备靠它才认得出自己的身份
+			if (p.startsWith("/__guard/whoami")) {
+				return ownerVisible
+					? json({ ok: true, name: "我的手机", role: "owner", via: "cookie", readonly: false })
+					: json({ ok: true, name: "只读设备", role: "readonly", via: "cookie", readonly: true });
+			}
 			if (!ownerVisible) return { ok: false, status: 403, json: async () => null, text: async () => "" };
 			if (p.startsWith("/__guard/status")) return json({ ok: true, viewer: "我的手机", sessions: 2, tunnel: { url: "https://demo-entry.trycloudflare.com", restarts: 1 } });
 			if (p.startsWith("/__guard/links")) return json({ ok: true, owner: { url: OWNER_LINK, createdAt: "2026-09-23T00:00:00Z" }, readonly: { url: RO_LINK, createdAt: "2026-09-23T00:00:00Z" } });
@@ -204,11 +210,20 @@ console.log("\n=== A. 守卫注入版 guard/ui.js ===");
 	check("关闭后页面上没有残留的遮罩层", !w.document.querySelector("div[style*='rgba(0, 0, 0, 0.45)']"));
 }
 
-console.log("\n=== B. 只读设备上不渲染面板 ===");
+console.log("\n=== B. 只读设备：不开控制面板，但要能一眼看出自己是只读 ===");
 {
 	const { w } = setupDom({ scriptPath: path.join(SELF_DIR, "..", "guard", "ui.js"), ownerVisible: false });
 	await tick(); await tick();
-	check("只读设备（控制面 403）不出现按钮", !btn(w));
+	check("只读设备（控制面 403）不出现控制面板按钮", !btn(w));
+	const badge = () => w.document.getElementById("__dsh_remote_ro_badge");
+	check("只读设备出现身份徽章（否则界面上看不出任何差别）", !!badge());
+	check("徽章文案写明是只读", !!badge() && badge().textContent.includes("只读"), badge() && badge().textContent);
+	badge().dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+	await tick();
+	const text = (w.document.getElementById("__dsh_remote_panel") || {}).textContent || "";
+	check("点开徽章写明当前设备与角色", text.includes("只读设备") && text.includes("只读权限"), text.slice(0, 60));
+	check("点开徽章说明写入是被服务端拦下的", text.includes("403"), text.slice(0, 120));
+	check("只读设备没有读到控制面数据（没有链接框）", !text.includes(OWNER_LINK));
 }
 
 console.log("\n=== C. 插件版 plugin/lib/client.js ===");

@@ -7,8 +7,8 @@ Tap one link on your phone and you're inside DSH — but **devices you never pai
 read-only devices **cannot send a single command**.
 
 > Status: guard, long-lived links, role enforcement, tunnel supervision, QR entry and the in-DSH panel are all
-> implemented and exercised. The suites total **375 assertions** — guard 125 / QR 46 / panel (real DOM) 68 /
-> plugin routes 51 / desktop helper 15 / plugin installer 28 / one-command setup 31 / live tunnel 11 — all green. Per-feature evidence is in the
+> implemented and exercised. The suites total **392 assertions** — guard 133 / QR 46 / panel (real DOM) 73 /
+> plugin routes 55 / desktop helper 15 / plugin installer 28 / one-command setup 31 / live tunnel 11 — all green. Per-feature evidence is in the
 > "Verification log" at the bottom.
 
 ---
@@ -140,6 +140,10 @@ node guard/guard.mjs tunnel up|down|status   # `down` also clears the auto-resta
 - **Reusable**: a link is not single-use. Re-opening it on the same device just refreshes that device's own
   credential — it doesn't pile up duplicate entries in the device list.
 - **The read-only link reads the current value**: viewing it never touches the main link.
+- **A link token beats an existing session**: opening a link states which identity this device is entering with,
+  so it **always re-issues the cookie** — a phone that once entered via the main link drops to read-only the moment
+  it opens the read-only link (and vice versa). Earlier logic was "already signed in, let it through", which let a
+  30-day owner cookie silently swallow the read-only link and made read-only purely nominal.
 - Opening flow: server validates the token → sets a 30-day cookie → **302 redirect strips the token from the
   address bar**; responses carry `Referrer-Policy: no-referrer`.
 - **Scan to enter**: `pair --qr` draws the QR in the terminal, and the panel's "二维码" button renders it on screen
@@ -167,6 +171,10 @@ Audit: `$DSH_HOME/remote/audit.jsonl` (append-only JSONL). Log: `guard.log`.
   - `readonly` — browse sessions, view images, subscribe to event streams; **writes are rejected server-side**.
     Default-deny: there is one allow-list of read-semantics RPC methods, and every other non-GET is a 403, so a
     newly added endpoint can never leak through.
+- **You can always see who you are**: `GET /__guard/whoami` reports the current device and role, and the panel
+  prints it at the top. A read-only device gets no control panel (that data belongs to the owner) but does get a
+  "只读设备 / read-only" badge whose popup spells out what is viewable and what will be a 403 — otherwise
+  "was that write actually blocked?" is invisible in the UI.
 - **CSRF**: `SameSite=Lax` plus an `Origin` check.
 - **Revocable**: `revoke` deletes the device and all its sessions immediately, no restart needed.
 
@@ -278,18 +286,21 @@ Testing turned up these **real** defects — all fixed:
 | Tunnel start failure | a failed `spawn` left only an `unhandledRejection` while `tunnel up` reported "waiting for the domain timed out"; `.cmd/.bat` wrappers are refused outright by Node | catch the `error` event, stop waiting early, print the real cause (with a `.cmd`-specific hint) |
 | Panel "read-only" button | once opened it could never be collapsed (wrong toggle condition — user-reported) | a real on/off toggle plus a DOM regression test |
 | Desktop helper `--reset --role readonly` | `--reset` was silently ignored | pass it through, plus a bin test |
+| **Read-only was purely nominal** | a phone that had once opened the owner link (30-day cookie) ignored the read-only link entirely: "already signed in, let it through" meant the server kept authorising writes as owner (user-reported) | a link token now **beats an existing session** (a valid token always re-issues the cookie); added `/__guard/whoami` and a "read-only device" badge so "which link am I on" is visible in the UI, with a DOM regression test |
 | Built-in QR encoder | ① format-info cells weren't marked as function modules before data placement → the codeword stream had holes and **scanners could not decode it at all**; ② mask 2 tested the row instead of the column; ③ the N4 penalty formula differed from the standard, so auto mask selection chose the wrong mask | all three fixed, then verified module-by-module against a reference implementation: 1332 combinations (text × version × ECC × mask) all identical, plus end-to-end decoding with jsqr |
 
 What the suites cover:
 
-- **guard** — `test/selftest.mjs` (111): fail-closed, pairing codes, long-lived link semantics, read-only boundaries,
-  owner control plane, WS allow-list, Origin/CSRF, loopback-trusted vs tunnel-untrusted, page injection + appearance
-  keeper, QR endpoint, reset endpoint, tunnel intent, audit.
+- **guard** — `test/selftest.mjs` (133): fail-closed, pairing codes, long-lived link semantics, **link token beats an
+  existing session**, read-only boundaries, owner control plane, `whoami` identity, WS allow-list, Origin/CSRF,
+  loopback-trusted vs tunnel-untrusted, page injection + appearance keeper, QR endpoint, reset endpoint, tunnel
+  intent, audit.
 - **QR** — `test/qr.test.mjs` (46): 6 golden matrices module-by-module, 3 Reed-Solomon vectors, the generator
   polynomial, structural assertions. The golden vectors come from npm's `qrcode`, used on a dev machine to generate
   vectors only — **not a runtime dependency**.
-- **panel** — `test/panel.dom.mjs` (33): mounts the real panels in jsdom and clicks through them.
-- **plugin routes** — `test/plugin.test.mjs` (29): real handler; `reset` and `qr` really invoke the guard CLI.
+- **panel** — `test/panel.dom.mjs` (73): mounts the real panels in jsdom and clicks through them, including the
+  per-hop health list and the read-only device badge.
+- **plugin routes** — `test/plugin.test.mjs` (55): real handler; `reset` and `qr` really invoke the guard CLI.
 - **desktop helper** — `test/bin.test.mjs` (15): temp DSH_HOME, "default leaves the link alone" semantics.
 - **tunnel** — `test/tunnel.test.mjs` (11): real cloudflared — domain acquired and written to urlFile, self-heal in
   6–45 s after a kill, and no resurrection 24 s after `down`.

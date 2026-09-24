@@ -99,6 +99,7 @@ window.__ModuleLoader__.load({
 			"/dsh-remote/link": "/__guard/link",
 			"/dsh-remote/reset": "/__guard/reset",
 			"/dsh-remote/qr": "/__guard/qr",
+			"/dsh-remote/whoami": "/__guard/whoami",
 			"/dsh-remote/revoke": "/__guard/revoke"
 		};
 		let usedFallback = false;
@@ -157,6 +158,12 @@ window.__ModuleLoader__.load({
 			x.addEventListener("click", closePanel);
 			head.appendChild(x);
 			panel.appendChild(head);
+			// 自己是谁要写在面板上：多台设备/多条链接下，"我在用哪条"是排查第一问
+			const identityLine = el("div", CSS.sub, "当前设备：…");
+			panel.appendChild(identityLine);
+			apiGet("/dsh-remote/whoami").then((me) => {
+				if (me && me.ok) identityLine.textContent = "当前设备：" + me.name + "（" + (me.readonly ? "只读" : "owner · 全权") + "）";
+			});
 			panel.appendChild(el("div", CSS.sub, "这条链接长期有效——改之前一直是它。手机点开即自动配对进入 DSH。"));
 
 			const card = el("div", CSS.card);

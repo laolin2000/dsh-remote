@@ -214,6 +214,32 @@ console.log("\n=== 7. 长期链接：默认不变、重置才换、可重复使�
 	check("只读链接换来的设备写被拦（403）", (await call("/api/session.prompt", { method: "POST", cookie: roCookie, body: {} })).status === 403);
 	check("同一台设备反复开链接不会堆设备（按名字复用）", (await call("/?t=" + t1)).status === 302);
 
+	// 回归：链接 token 必须**优先于已有会话**。
+	// 踩过的坑（实测）：手机浏览器先开过 owner 链接、30 天 cookie 还在，
+	// 之后打开只读链接被"已登录就直接放行"顶掉 —— 服务器继续按 owner 放行写入，
+	// 表现就是"用只读链接写入却没被拒绝"。老逻辑在这里是 302 且**不带 Set-Cookie**。
+	{
+		const ownFirst = await call("/?t=" + t1);
+		const ownCookie = ownFirst.setCookie.split(";")[0];
+		check("先用主链接登录 → 写入放行（owner 200）", (await call("/api/session.prompt", { method: "POST", cookie: ownCookie, body: {} })).status === 200);
+		const downgrade = await call("/?t=" + t2, { cookie: ownCookie, headers: { "x-forwarded-proto": "https" } });
+		check("带着 owner 会话打开只读链接 → 302 且**重新下发 cookie**（这是修好的那一处）", downgrade.status === 302 && /dsh_remote_sid=/.test(downgrade.setCookie), "实际 " + downgrade.status + " cookie=" + (downgrade.setCookie || "(无)"));
+		const newCookie = downgrade.setCookie.split(";")[0];
+		check("换回来的新 cookie 是只读：写入 → 403", (await call("/api/session.prompt", { method: "POST", cookie: newCookie, body: {} })).status === 403, "cookie " + newCookie.slice(0, 24));
+		check("换回来的新 cookie 仍能读（会话列表 200）", (await call("/api/session.list", { method: "POST", cookie: newCookie, body: {} })).status === 200);
+		check("旧 owner cookie 不再是这台浏览器的身份（它自己仍有效，但页面已换成只读）", (await call("/api/session.prompt", { method: "POST", cookie: newCookie, body: {} })).status === 403);
+	}
+
+	// whoami：任何已配对设备都能问，只读设备靠它显示身份徽章
+	{
+		const meOwner = await call("/__guard/whoami", { cookie: roCookie });
+		const me = JSON.parse(meOwner.text);
+		check("whoami 对只读设备开放 → 200 且 role=readonly", meOwner.status === 200 && me.role === "readonly" && me.readonly === true, meOwner.text.slice(0, 80));
+		check("whoami 未配对 → 401", (await call("/__guard/whoami")).status === 401);
+		const meLocal = JSON.parse((await call("/__guard/whoami", { local: true })).text);
+		check("本机直连 whoami → owner，名字标为「本机(直连)」", meLocal.role === "owner" && /本机/.test(meLocal.name), JSON.stringify(meLocal));
+	}
+
 	const e = await call("/__guard/link?reset=1", { cookie: jar.owner });
 	const E = JSON.parse(e.text);
 	const F = JSON.parse((await call("/__guard/links", { cookie: jar.owner })).text);

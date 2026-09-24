@@ -86,6 +86,7 @@ window.__ModuleLoader__.load({
 | `GET /dsh-remote/devices` | 设备列表 |
 | `POST /dsh-remote/revoke` | 吊销设备 |
 | `GET /dsh-remote/health` | 逐段体检：守卫 / 隧道 / 上游，以及"哪一段没起来" |
+| `GET /dsh-remote/whoami` | 当前设备是谁、什么角色（面板顶部那行「当前设备」） |
 | `POST /dsh-remote/start` | 把没起来的环节拉起来（守卫 → 隧道）；幂等，已经好的不会被重启 |
 
 `reset` 与 `qr` 由插件的服务端半边**真调守卫 CLI**（`pair --reset` / `qr --svg`）实现；

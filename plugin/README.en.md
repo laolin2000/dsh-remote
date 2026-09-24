@@ -89,6 +89,7 @@ coupling to DSH's layout.
 | `GET /dsh-remote/devices` | device list |
 | `POST /dsh-remote/revoke` | revoke a device |
 | `GET /dsh-remote/health` | per-hop health: guard / tunnel / upstream, and which hop is down |
+| `GET /dsh-remote/whoami` | which device you are and what role it has (the panel's "current device" line) |
 | `POST /dsh-remote/start` | start the missing hops (guard → tunnel); idempotent, healthy hops are left alone |
 
 `reset` and `qr` **really invoke the guard CLI** (`pair --reset` / `qr --svg`) from the plugin's server half; the

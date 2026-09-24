@@ -72,9 +72,10 @@ function makeRes() {
 	res.end = (chunk) => { if (chunk) res.body += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk); return res; };
 	return res;
 }
-async function call(pathname, { method = "GET", role, host = "127.0.0.1:50142", body } = {}) {
+async function call(pathname, { method = "GET", role, host = "127.0.0.1:50142", body, device } = {}) {
 	const headers = { host };
 	if (role !== undefined) headers["x-dsh-remote-role"] = role;
+	if (device !== undefined) headers["x-dsh-remote-device"] = encodeURIComponent(device);
 	const res = makeRes();
 	await handler(makeReq({ method, url: pathname, headers, body }), res);
 	let json = null;
@@ -111,6 +112,15 @@ console.log("\n=== 2. 读接口：状态 / 链接 / 设备 ===");
 
 	const dev = await call("/dsh-remote/devices");
 	check("设备列表可用", dev.json?.devices?.[0]?.name === "我的手机");
+
+	// whoami：面板顶部显示"我是谁、什么角色"（只读设备靠它才认得出自己）
+	const me = await call("/dsh-remote/whoami");
+	check("whoami 报出当前设备与角色（本机直连 → owner）", me.status === 200 && me.json?.role === "owner" && me.json?.readonly === false, JSON.stringify(me.json));
+	check("whoami 带回设备名（本机直连标注为「本机(直连)」）", /本机/.test(String(me.json?.name)), String(me.json?.name));
+	const meRemote = await call("/dsh-remote/whoami", { role: "owner", device: "我的手机", host: "demo-entry.trycloudflare.com" });
+	check("经守卫来的 owner：whoami 报出设备名与 owner 角色", meRemote.json?.name === "我的手机" && meRemote.json?.role === "owner", JSON.stringify(meRemote.json));
+	const meRo = await call("/dsh-remote/whoami", { role: "readonly", host: "demo-entry.trycloudflare.com" });
+	check("只读设备取 whoami → 403（守卫那一道先拦下，防提权面变大）", meRo.status === 403, String(meRo.status));
 }
 
 console.log("\n=== 3. 二维码路由（真调守卫 CLI）===");

@@ -8,14 +8,15 @@
 //
 // 为什么不写 DSH 插件：DSH 的 Extension SDK 只能给 agent 加工具，没有界面能力。
 // 守卫本来就在链路上、本来就要改写发出去的 HTML，所以由它注入最稳。
-// 面板只在 owner 设备上出现（只读设备拿 403 就静默不渲染）。
+// 面板只在 owner 设备上出现；只读设备不渲染面板主体，但会挂一个「只读设备」身份徽章
+// （踩过的坑：只读链接被已有会话顶掉时，界面上看不出任何差别，只能靠"写入居然成功了"来发现）。
 // ============================================================================
 (function () {
   "use strict";
   if (window.__dshRemoteUi) return;
   window.__dshRemoteUi = true;
 
-  var API = { status: "/__guard/status", links: "/__guard/links", link: "/__guard/link", devices: "/__guard/devices", revoke: "/__guard/revoke", reset: "/__guard/reset", qr: "/__guard/qr", doctor: "/__guard/doctor" };
+  var API = { whoami: "/__guard/whoami", status: "/__guard/status", links: "/__guard/links", link: "/__guard/link", devices: "/__guard/devices", revoke: "/__guard/revoke", reset: "/__guard/reset", qr: "/__guard/qr", doctor: "/__guard/doctor" };
 
   function el(tag, css, text) {
     var e = document.createElement(tag);
@@ -90,7 +91,7 @@
     tag: "font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid #1f5c3f;color:#3ddc84;margin-left:6px"
   };
 
-  var layer = null, panel = null;
+  var layer = null, panel = null, identity = null;   // identity = /__guard/whoami 的答案（本机是谁、什么角色）
 
   // 遮罩与面板共用一个容器：关闭时一起移除。
   // （反面教材：只 remove 面板、留下遮罩 → 页面整体变暗且点不动，用户只能刷新。）
@@ -118,6 +119,8 @@
     x.addEventListener("click", close);
     head.appendChild(x);
     panel.appendChild(head);
+    // 自己是谁要写在面板上：多台设备/多条链接下，"我在用哪条"是排查第一问
+    panel.appendChild(el("div", CSS.sub, "当前设备：" + (identity ? identity.name + "（owner · 全权）" : "…")));
     panel.appendChild(el("div", CSS.sub, "这条链接长期有效——改之前一直是它。手机点开即自动配对进入 DSH。"));
 
     // ---- 当前链接（一条 + 三个按钮）----
@@ -388,8 +391,63 @@
     placeAboveEac(btn);
   }
 
+  /** 身份徽章：只读设备看不到控制面板（那些数据本来就不该给它），
+   *  但**必须能一眼看出自己是只读**——否则"写入到底有没有被拦住"完全无从判断。
+   *  踩过的坑（实测）：只读链接被旧会话顶掉时，界面上看不出任何差别。 */
+  function mountReadonlyBadge(me) {
+    if (document.getElementById("__dsh_remote_ro_badge")) return;
+    var btn = el("div", CSS.btn, null);
+    btn.id = "__dsh_remote_ro_badge";
+    btn.title = "dsh-remote · 这台设备是只读权限";
+    btn.appendChild(el("span", CSS.dot + ";background:#f0b429"));
+    btn.appendChild(el("span", CSS.text, "只读设备"));
+    btn.addEventListener("mouseenter", function () { btn.style.borderColor = CSS.hoverBorder; });
+    btn.addEventListener("mouseleave", function () { btn.style.borderColor = CSS.normalBorder; });
+    btn.addEventListener("click", function () { openReadonly(me); });
+    document.body.appendChild(btn);
+    placeAboveEac(btn);
+  }
+
+  function openReadonly(me) {
+    close();
+    layer = el("div", "position:fixed;inset:0;z-index:2147483001");
+    layer.id = "__dsh_remote_layer";
+    var mask = el("div", CSS.mask);
+    mask.addEventListener("click", close);
+    layer.appendChild(mask);
+    panel = el("div", CSS.panel);
+    panel.id = "__dsh_remote_panel";
+
+    var head = el("div", CSS.row);
+    head.setAttribute("style", CSS.row + ";justify-content:space-between");
+    head.appendChild(el("div", CSS.h1, "只读设备"));
+    var x = el("button", CSS.g, "关闭");
+    x.addEventListener("click", close);
+    head.appendChild(x);
+    panel.appendChild(head);
+
+    var card = el("div", CSS.card);
+    var who = el("div", null, "当前设备：" + ((me && me.name) || "只读设备") + "（只读权限）");
+    card.appendChild(who);
+    card.appendChild(el("div", CSS.sub + ";" + CSS.warn, "能看：会话、图片、文件树、目录列表、模型列表。"));
+    card.appendChild(el("div", CSS.sub, "会被拒：发指令、取消任务、改设置、触控注入……一律由服务端 403 拦下——不是界面上藏了按钮，是服务器不放行。"));
+    card.appendChild(el("div", CSS.sub, "需要全权操作，请用主设备链接（面板「复制」那条）重新打开本页。"));
+    panel.appendChild(card);
+
+    layer.appendChild(panel);
+    document.body.appendChild(layer);
+    document.addEventListener("keydown", onEsc);
+  }
+
   function boot() {
-    jget(API.status).then(function (st) { if (st && st.ok) mount(); });   // 只读设备拿 403 → 不渲染
+    // 先认身份，再看能不能开面板：owner 才有 /__guard/status（只读设备拿它必然 403）。
+    // 旧版这里直接用 status 当"我是不是 owner"的判据，于是只读设备在界面上完全是空白。
+    jget(API.whoami).then(function (me) {
+      if (!me || !me.ok) return;
+      if (me.readonly) { mountReadonlyBadge(me); return; }
+      identity = me;
+      mount();
+    });
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
