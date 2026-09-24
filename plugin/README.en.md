@@ -88,6 +88,8 @@ coupling to DSH's layout.
 | `GET /dsh-remote/link[?role=readonly][&reset=1]` | single link / rotate (legacy-compatible) |
 | `GET /dsh-remote/devices` | device list |
 | `POST /dsh-remote/revoke` | revoke a device |
+| `GET /dsh-remote/health` | per-hop health: guard / tunnel / upstream, and which hop is down |
+| `POST /dsh-remote/start` | start the missing hops (guard → tunnel); idempotent, healthy hops are left alone |
 
 `reset` and `qr` **really invoke the guard CLI** (`pair --reset` / `qr --svg`) from the plugin's server half; the
 other endpoints read the guard's state files (`guard.json` / `tunnel.json` / `urlFile`) instead of parsing CLI output.
@@ -95,6 +97,13 @@ other endpoints read the guard's state files (`guard.json` / `tunnel.json` / `ur
 **Admission**: requests coming through the guard must carry `x-dsh-remote-role: owner`; direct loopback requests
 must have a loopback `Host`. The guard also marks `/dsh-remote/*` owner-only — two gates, so a read-only device
 can't mint itself an owner link.
+
+**Self-healing**: five seconds after DSH starts, and every 60 s afterwards (tune with
+`DSH_REMOTE_HEAL_SECONDS`, 0 disables), the plugin checks whether the guard is running and starts it if not.
+**This is the fix for "after a reboot the phone and the web page stopped working"** — the guard is an ordinary
+background process, so a machine/DSH restart leaves it dead; DSH is the long-running app, so having its plugin
+watch over the guard is the reliable arrangement. The panel shows a "运行状态" row (guard ✓ / tunnel ✓ plus a
+one-click "启动 / 修复").
 
 **Fallback**: when the plugin's server half is an older build (new routes 404) or `guardPath` isn't configured, the
 client talks to the local guard directly (`http://127.0.0.1:8443/__guard/*`, which the guard trusts as loopback) and

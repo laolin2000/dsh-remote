@@ -109,6 +109,74 @@ function guardSnapshot() {
 	};
 }
 
+// ---------------------------------------------------------------- 链路自检与自愈
+// 为什么由插件来干这件事：守卫是普通后台进程，机器/DSH 一重启它就没了，
+// 而"重启之后手机和网页都用不了"正是这么来的（实测踩到）。DSH 是用户天天在用的
+// 常驻程序，所以让它内置的插件负责「发现守卫掉了就把它拉回来」最可靠。
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function pidAlive(pid) { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } }
+function guardBase() {
+	const conf = readJson(GUARD_CONF) || {};
+	return { base: `http://127.0.0.1:${conf.port || 8443}`, conf };
+}
+async function probe(url, ms = 2500) {
+	try { const r = await fetch(url, { signal: AbortSignal.timeout(ms) }); return r.ok; } catch { return false; }
+}
+/** 逐段健康：守卫 / 隧道 / 上游（上游探的是守卫的配置，不是 DSH 自己） */
+async function chainHealth() {
+	const { base, conf } = guardBase();
+	const guardOk = await probe(base + "/__guard/health");
+	const tun = readJson(TUNNEL_STATE) || {};
+	const cfg = readJson(GUARD_CONF) || {};
+	let url = "";
+	try { if (cfg.urlFile && fs.existsSync(cfg.urlFile)) url = fs.readFileSync(cfg.urlFile, "utf8").trim(); } catch {}
+	if (!url) url = tun.url || "";
+	const problems = [];
+	if (!guardOk) problems.push("守卫没在运行（手机链接、二维码都靠它）");
+	if (guardOk && conf.superviseTunnel !== false && !pidAlive(tun.pid)) problems.push("公网隧道没在运行（手机连不上，只能本机打开）");
+	return {
+		guard: guardOk, guardPort: conf.port || 8443, upstream: conf.upstream || "",
+		tunnel: { alive: pidAlive(tun.pid), url, desired: conf.superviseTunnel !== false, pid: tun.pid || null },
+		cloudflared: conf.cloudflared || "", problems
+	};
+}
+let starting = null;
+/** 守卫不在就拉起来（并发去重；最多等 12 秒看它是否就绪）。 */
+async function ensureGuard(guardPath) {
+	if ((await chainHealth()).guard) return { ok: true, started: false };
+	if (!guardPath || !fs.existsSync(guardPath)) {
+		return { ok: false, error: "找不到守卫脚本：请在插件配置里填 config.guardPath（或用安装脚本重装一次）", guardPath };
+	}
+	if (starting) return starting;
+	starting = (async () => {
+		let child;
+		try {
+			child = spawn(process.execPath, [guardPath, "serve"], { detached: true, stdio: "ignore", windowsHide: true, cwd: path.dirname(guardPath) });
+		} catch (e) { return { ok: false, error: `拉起守卫失败：${e.message}` }; }
+		child.on("error", () => {});
+		child.unref();
+		const { base } = guardBase();
+		for (let i = 0; i < 24; i++) {
+			await sleep(500);
+			if (await probe(base + "/__guard/health")) return { ok: true, started: true, pid: child.pid };
+		}
+		return { ok: false, error: `守卫进程起了（PID ${child.pid}）但 12 秒内没就绪；看状态目录里的 guard.log`, pid: child.pid };
+	})();
+	try { return await starting; } finally { starting = null; }
+}
+/** 隧道不在就交给守卫自己拉（守卫的守护进程会看住它）。 */
+async function ensureTunnel(guardPath) {
+	const h = await chainHealth();
+	if (!h.guard) return { ok: false, error: "守卫还没起来，先起守卫" };
+	if (h.tunnel.alive) return { ok: true, started: false, url: h.tunnel.url };
+	if (h.tunnel.desired === false) return { ok: false, error: "隧道被显式关掉了（tunnel down）；想用就点“启动”，它会重新打开" };
+	if (!h.cloudflared || !fs.existsSync(h.cloudflared)) return { ok: false, error: "没有可用的 cloudflared：用 node bin/setup.mjs --cloudflared <路径> 指定一次即可记住" };
+	if (!guardPath || !fs.existsSync(guardPath)) return { ok: false, error: "找不到守卫脚本，无法调用 tunnel up" };
+	const out = await runGuard(guardPath, ["tunnel", "up"]);        // 里面会 spawn cloudflared（分离进程）
+	const h2 = await chainHealth();
+	return { ok: !!h2.tunnel.alive, started: true, url: h2.tunnel.url, detail: (out.out || "").trim().slice(-200) };
+}
+
 export function apply(ctx, config) {
 	const guardPath = (config && config.guardPath) || process.env.DSH_REMOTE_GUARD || "";
 
@@ -126,6 +194,22 @@ export function apply(ctx, config) {
 
 			if (pathname === "/dsh-remote/status" && method === "GET") {
 				json(res, 200, { ok: true, guardPath, configured: Boolean(guardPath), ...guardSnapshot() });
+				return;
+			}
+
+			// 逐段体检：守卫 / 隧道 / 上游（面板据此告诉用户"哪一段没起来"）
+			if (pathname === "/dsh-remote/health" && method === "GET") {
+				json(res, 200, { ok: true, ...(await chainHealth()) });
+				return;
+			}
+
+			// 把没起来的环节拉起来（守卫 → 隧道）。幂等：已经好的不会被重启。
+			if (pathname === "/dsh-remote/start" && method === "POST") {
+				const g = await ensureGuard(guardPath);
+				const t = g.ok ? await ensureTunnel(guardPath) : { ok: false, error: "守卫未就绪，跳过隧道" };
+				// 注意：体检结果要放在 health 键下，别和 start 的结果同名（踩过：展开覆盖后 PID 与错误原因全丢了）
+				const health = await chainHealth();
+				json(res, g.ok && t.ok ? 200 : 500, { ok: g.ok && t.ok, guard: g, tunnel: t, health });
 				return;
 			}
 
@@ -193,4 +277,24 @@ export function apply(ctx, config) {
 			json(res, 404, { ok: false, error: "unknown dsh-remote endpoint" });
 		}
 	});
+
+	// 后台自愈：DSH 起动后与之后每隔一段时间，发现守卫不在就把它拉回来。
+	// （这就是"重启之后手机和网页都用不了"的根治办法：以前没有任何东西负责重启守卫。）
+	// 可用环境变量 DSH_REMOTE_HEAL_SECONDS=0 关掉；正数则改检查间隔（秒）。
+	const healSeconds = process.env.DSH_REMOTE_HEAL_SECONDS === undefined ? 60 : Number(process.env.DSH_REMOTE_HEAL_SECONDS);
+	if (healSeconds > 0) {
+		const tick = async () => {
+			try {
+				const h = await chainHealth();
+				if (h.guard) return;
+				const r = await ensureGuard(guardPath);
+				console.log(r.ok ? `[dsh-remote] 发现守卫没在运行，已自动拉起${r.pid ? `（PID ${r.pid}）` : ""}` : `[dsh-remote] 守卫没在运行，拉起失败：${r.error}`);
+			} catch (e) { console.log("[dsh-remote] 自愈检查异常：", e?.message || e); }
+		};
+		const first = setTimeout(tick, 5000);          // DSH 起动 5 秒后先查一次
+		if (first.unref) first.unref();
+		const loop = setInterval(tick, healSeconds * 1000);
+		if (loop.unref) loop.unref();
+		console.log(`[dsh-remote] 守卫自愈已开启（每 ${healSeconds} 秒检查一次）`);
+	}
 }

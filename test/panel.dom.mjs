@@ -47,7 +47,7 @@ const QUIET_DEVICE = { id: "dev-1", name: "我的手机", role: "owner", lastSee
 const RO_DEVICE = { id: "dev-2", name: "只读设备", role: "readonly", lastSeenAt: null };
 
 /** 造一个假 fetch：按路径给出响应，并记录调用（方法、路径、body）。 */
-function makeFetch({ ownerVisible = true, calls = [] } = {}) {
+function makeFetch({ ownerVisible = true, calls = [], health = null, healthFails = false } = {}) {
 	return async function fetchStub(url, options = {}) {
 		const method = (options.method || "GET").toUpperCase();
 		const full = String(url);
@@ -69,6 +69,11 @@ function makeFetch({ ownerVisible = true, calls = [] } = {}) {
 		// 插件版（/dsh-remote/*）
 		if (p.startsWith("/dsh-remote/")) {
 			if (p.startsWith("/dsh-remote/status")) return json({ ok: true, guardPath: "x", tunnel: {}, sessions: 1 });
+			if (p.startsWith("/dsh-remote/health")) {
+				if (healthFails) return json({ ok: false }, 404);
+				return json({ ok: true, guard: true, guardPort: 8443, upstream: "http://127.0.0.1:3081", tunnel: { alive: true, url: "https://demo-entry.trycloudflare.com", desired: true }, cloudflared: "x", problems: [], ...(health || {}) });
+			}
+			if (p.startsWith("/dsh-remote/start")) return json({ ok: true, guard: { ok: true, started: true }, tunnel: { ok: true, started: false } });
 			if (p.startsWith("/dsh-remote/links")) return json({ ok: true, owner: { url: OWNER_LINK, createdAt: "2026-09-23T00:00:00Z" }, readonly: { url: RO_LINK } });
 			if (p.startsWith("/dsh-remote/devices")) return json({ ok: true, devices: [QUIET_DEVICE] });
 			if (p.startsWith("/dsh-remote/qr")) return raw(SVG, "image/svg+xml");
@@ -82,11 +87,11 @@ function makeFetch({ ownerVisible = true, calls = [] } = {}) {
 }
 
 /** 造一个装了面板脚本的 jsdom 环境。 */
-function setupDom({ scriptPath, ownerVisible = true, clipboardOk = true } = {}) {
+function setupDom({ scriptPath, ownerVisible = true, clipboardOk = true, health = null, healthFails = false, calls: givenCalls = null } = {}) {
 	const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>", { url: "http://127.0.0.1:50142/", runScripts: "outside-only" });
 	const w = dom.window;
-	const calls = [];
-	w.fetch = makeFetch({ ownerVisible, calls });
+	const calls = givenCalls || [];
+	w.fetch = makeFetch({ ownerVisible, calls, health, healthFails });
 	w.confirm = () => true;
 	const copied = [];
 	w.navigator.clipboard = { writeText: async (t) => { if (!clipboardOk) throw new Error("denied"); copied.push(t); } };
@@ -307,6 +312,56 @@ console.log("\n=== F. 两个按钮大小与颜色统一（与 EAC 监控同一�
 	check("插件版同样统一（内边距/背景/字号）",
 		raw4.includes("padding:6px 12px") && raw4.includes("--dsw-alias-bg-layer-2") && raw4.includes("font:11px/1"),
 		raw4.slice(0, 120));
+}
+
+console.log("\n=== G. 运行状态与「一键修复」 ===");
+{
+	// 场景 1：一切正常 → 状态行报 ✓，不需要修复按钮
+	const { w } = setupDom({ scriptPath: path.join(SELF_DIR, "..", "plugin", "lib", "client.js") });
+	const mod = w.__slots["dsh-remote-panel"];
+	const reg = [];
+	mod.apply({ slots: { register: (o, c) => { reg.push({ o, c }); return () => {}; } } });
+	reg[0].c();
+	await tick(); await tick(); await tick(); await tick();
+	btn(w).dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+	await tick(); await tick(); await tick(); await tick();
+	const pan = layer(w).textContent || "";
+	check("面板里有「运行状态」一栏", pan.includes("运行状态"));
+	check("正常时状态行报守卫与隧道都 ✓", /守卫 ✓/.test(pan) && /隧道 ✓/.test(pan), pan.slice(0, 160));
+	const fixBtn = [...w.document.querySelectorAll("button")].find((b) => (b.textContent || "").includes("启动 / 修复"));
+	check("正常时修复按钮是隐藏的", !!fixBtn && (fixBtn.getAttribute("style") || "").includes("display:none"), fixBtn && fixBtn.getAttribute("style"));
+
+	// 场景 2：守卫掉了 → 状态行说明问题、修复按钮出现；点它发出 /start
+	const calls = [];
+	const { w: w2 } = setupDom({
+		scriptPath: path.join(SELF_DIR, "..", "plugin", "lib", "client.js"), calls,
+		health: { guard: false, problems: ["守卫没在运行（手机链接、二维码都靠它）"], tunnel: { alive: false, url: "", desired: true } }
+	});
+	const mod2 = w2.__slots["dsh-remote-panel"];
+	const reg2 = [];
+	mod2.apply({ slots: { register: (o, c) => { reg2.push({ o, c }); return () => {}; } } });
+	reg2[0].c();
+	await tick(); await tick(); await tick(); await tick();
+	btn(w2).dispatchEvent(new w2.MouseEvent("click", { bubbles: true }));
+	await tick(); await tick(); await tick(); await tick();
+	const pan2 = layer(w2).textContent || "";
+	check("守卫掉了时明确写出来", /守卫 ✗ 未运行/.test(pan2) && /守卫没在运行/.test(pan2), pan2.slice(0, 200));
+	const fix2 = [...w2.document.querySelectorAll("button")].find((b) => (b.textContent || "").includes("启动 / 修复"));
+	check("有问题时修复按钮可见", !!fix2 && !(fix2.getAttribute("style") || "").includes("display:none"), fix2 && fix2.getAttribute("style"));
+	fix2.dispatchEvent(new w2.MouseEvent("click", { bubbles: true }));
+	await tick(); await tick(); await tick(); await tick();
+	check("点修复会 POST /dsh-remote/start", calls.some((c) => c.path.startsWith("/dsh-remote/start") && c.method === "POST"), JSON.stringify(calls.map((c) => c.method + " " + c.path)));
+
+	// 场景 3：插件服务端半边是旧版（/health 404）→ 提示重启 DSH，而不是静默
+	const { w: w3 } = setupDom({ scriptPath: path.join(SELF_DIR, "..", "plugin", "lib", "client.js"), healthFails: true });
+	const mod3 = w3.__slots["dsh-remote-panel"];
+	const reg3 = [];
+	mod3.apply({ slots: { register: (o, c) => { reg3.push({ o, c }); return () => {}; } } });
+	reg3[0].c();
+	await tick(); await tick(); await tick();
+	btn(w3).dispatchEvent(new w3.MouseEvent("click", { bubbles: true }));
+	await tick(); await tick(); await tick(); await tick();
+	check("旧版服务端半边时提示「重启一次 DSH」", /重启一次 DSH/.test(layer(w3).textContent || ""), (layer(w3).textContent || "").slice(0, 200));
 }
 
 console.log(`\n================ 结果：${pass} 通过 / ${fail} 失败 ================`);

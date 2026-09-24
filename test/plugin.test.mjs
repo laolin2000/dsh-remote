@@ -11,6 +11,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
+import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -26,6 +28,7 @@ function check(name, ok, detail = "") {
 
 // 插件在模块加载时读 DSH_HOME，所以必须先设环境变量再 import
 process.env.DSH_HOME = TMP;
+process.env.DSH_REMOTE_HEAL_SECONDS = "0";   // 测试里关掉自愈定时器，避免干扰
 fs.mkdirSync(path.join(TMP, "remote"), { recursive: true });
 const GUARD_CONF = path.join(TMP, "remote", "guard.json");
 fs.writeFileSync(GUARD_CONF, JSON.stringify({
@@ -171,6 +174,43 @@ console.log("\n=== 7. 没有公网入口时也不能给出一条没有域名的�
 	fs.writeFileSync(conf.urlFile, "https://demo-entry.trycloudflare.com\n", "utf8");
 	const r2 = await call("/dsh-remote/links");
 	check("有公网入口时用公网域名且 local=false", r2.json?.owner?.url.startsWith("https://demo-entry.trycloudflare.com/?t=") && r2.json?.owner?.local === false, JSON.stringify(r2.json?.owner));
+}
+
+console.log("\n=== 8. 链路自检与一键启动：/health 与 /start（真起一个守卫）===");
+{
+	// 指到一个空闲端口，绝不碰真实守卫（真实那个在 8443）
+	const freePort = await new Promise((resolve) => {
+		const srv = net.createServer();
+		srv.listen(0, "127.0.0.1", () => { const p = srv.address().port; srv.close(() => resolve(p)); });
+	});
+	const conf = JSON.parse(fs.readFileSync(GUARD_CONF, "utf8"));
+	conf.port = freePort;
+	conf.bind = "127.0.0.1";
+	conf.superviseTunnel = false;                 // 不在测试里去拉 cloudflared
+	fs.writeFileSync(GUARD_CONF, JSON.stringify(conf, null, 2), "utf8");
+
+	const h1 = await call("/dsh-remote/health");
+	check("守卫没跑时 /health 报 guard=false", h1.json?.guard === false, JSON.stringify(h1.json));
+	check("problems 明确指出守卫没运行", (h1.json?.problems || []).some((x) => /守卫/.test(x)), JSON.stringify(h1.json?.problems));
+	check("体检未通过时提示里带上守卫端口", h1.json?.guardPort === freePort, String(h1.json?.guardPort));
+
+	const s1 = await call("/dsh-remote/start", { method: "POST" });
+	check("/start 真的把守卫拉起来了", s1.json?.guard?.started === true, JSON.stringify(s1.json?.guard));
+	check("拉起后 /health 立即报 guard=true", (await call("/dsh-remote/health")).json?.guard === true);
+	check("隧道被显式关掉时不硬拉，并说明原因", /显式关掉|tunnel down/.test(s1.json?.tunnel?.error || ""), JSON.stringify(s1.json?.tunnel));
+	const pid = s1.json?.guard?.pid;
+	check("/start 返回了守卫 PID（便于排查）", Number.isInteger(pid) && pid > 0, String(pid));
+
+	const s2 = await call("/dsh-remote/start", { method: "POST" });
+	check("已在运行时 /start 是幂等的（started=false）", s2.json?.guard?.started === false, JSON.stringify(s2.json?.guard));
+
+	// 杀掉它，再确认体检能重新发现问题（模拟"重启后守卫没了"）
+	if (pid) { spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" }); await new Promise((r) => setTimeout(r, 1500)); }
+	check("守卫被停掉后 /health 又能报 guard=false", (await call("/dsh-remote/health")).json?.guard === false);
+	const s3 = await call("/dsh-remote/start", { method: "POST" });
+	check("再次 /start 仍能把它拉回来（可反复自愈）", s3.json?.guard?.started === true, JSON.stringify(s3.json?.guard));
+	if (s3.json?.guard?.pid) spawn("taskkill", ["/PID", String(s3.json.guard.pid), "/T", "/F"], { stdio: "ignore" });
+	await new Promise((r) => setTimeout(r, 800));
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

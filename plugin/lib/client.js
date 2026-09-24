@@ -200,6 +200,21 @@ window.__ModuleLoader__.load({
 			devCard.appendChild(devList);
 			panel.appendChild(devCard);
 			panel.appendChild(el("div", CSS.sub, "吊销设备会立刻让它掉线（该设备的会话 cookie 同时失效）。"));
+
+			// ---- 运行状态：哪一段没起来，一键拉起来 ----
+			const healthCard = el("div", CSS.card);
+			healthCard.appendChild(el("div", null, "运行状态"));
+			const healthLine = el("div", CSS.sub, "正在体检…");
+			healthCard.appendChild(healthLine);
+			const fixRow = el("div", CSS.row);
+			const fixBtn = el("button", CSS.b, "启动 / 修复");
+			fixBtn.setAttribute("style", "display:none");
+			const recheckBtn = el("button", CSS.g, "重新体检");
+			fixRow.appendChild(fixBtn);
+			fixRow.appendChild(recheckBtn);
+			healthCard.appendChild(fixRow);
+			panel.appendChild(healthCard);
+
 			const foot = el("div", CSS.sub, "");
 			panel.appendChild(foot);
 
@@ -318,6 +333,39 @@ window.__ModuleLoader__.load({
 
 			loadLinks();
 			loadDevices();
+
+			/** 体检 + 需要时给出一键修复（守卫掉了就把它拉起来、隧道掉了就拉隧道）。 */
+			function loadHealth() {
+				healthLine.textContent = "正在体检…";
+				fixBtn.setAttribute("style", "display:none");
+				apiGet("/dsh-remote/health").then((h) => {
+					if (!h || !h.ok) {
+						healthLine.textContent = "体检失败：插件服务端半边可能是旧版（重启一次 DSH 即可）；当前进程里没有 /dsh-remote/health";
+						healthLine.setAttribute("style", CSS.bad);
+						return;
+					}
+					const guardTxt = h.guard ? "守卫 ✓" : "守卫 ✗ 未运行";
+					const tunTxt = h.tunnel?.alive ? `隧道 ✓ ${h.tunnel.url || ""}` : "隧道 ✗ 未运行";
+					const bad = (h.problems || []).length > 0;
+					healthLine.textContent = `${guardTxt}　${tunTxt}` + (bad ? "　— " + h.problems.join("；") : "");
+					healthLine.setAttribute("style", bad ? CSS.bad : CSS.ok);
+					fixBtn.setAttribute("style", bad ? CSS.b.replace("display:none", "") + ";display:inline-block" : "display:none");
+				});
+			}
+			fixBtn.addEventListener("click", () => {
+				fixBtn.textContent = "正在启动…";
+				fixBtn.setAttribute("style", "display:inline-block;opacity:.6");
+				apiPost("/dsh-remote/start", {}).then((r) => {
+					fixBtn.textContent = "启动 / 修复";
+					if (!r) { say("启动失败：插件服务端半边可能是旧版（重启一次 DSH）", CSS.bad); loadHealth(); return; }
+					say(r.ok ? "已把没起来的环节拉起来了 · " + nowText() : ("部分成功：" + [r.guard?.error, r.tunnel?.error].filter(Boolean).join("；")), r.ok ? CSS.ok : CSS.bad);
+					loadHealth();
+					loadLinks();
+				});
+			});
+			recheckBtn.addEventListener("click", loadHealth);
+			loadHealth();
+
 			apiGet("/dsh-remote/status").then((st) => {
 				if (!st || !st.ok) return;
 				const t = st.tunnel || {};
