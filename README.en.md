@@ -78,7 +78,7 @@ What `setup.mjs` does in one go (idempotent, safe to re-run):
 | 1 | Installs the DSH UI plugin (copy the package, append the mount entry, update the name list, back up first) |
 | 2 | Finds cloudflared and writes its path/port/upstream into `guard.json` |
 | 3 | Picks the upstream automatically: your local middle layer on 3081 if present, otherwise DSH's own port (50142) |
-| 4 | Starts the guard **in the background** (does not hold your terminal; survives closing it) |
+| 4 | Starts the guard in the background (does not hold your terminal; survives closing it) |
 | 5 | Brings up the public tunnel and prints the current phone link plus a terminal QR code |
 
 Flags: `--dry-run`, `--no-tunnel`, `--no-guard`, `--port`, `--dsh-port`, `--upstream`, `--cloudflared`, `--profile`.
@@ -289,8 +289,8 @@ Testing turned up these **real** defects — all fixed:
 | Tunnel start failure | a failed `spawn` left only an `unhandledRejection` while `tunnel up` reported "waiting for the domain timed out"; `.cmd/.bat` wrappers are refused outright by Node | catch the `error` event, stop waiting early, print the real cause (with a `.cmd`-specific hint) |
 | Panel "read-only" button | once opened it could never be collapsed (wrong toggle condition — user-reported) | a real on/off toggle plus a DOM regression test |
 | Desktop helper `--reset --role readonly` | `--reset` was silently ignored | pass it through, plus a bin test |
-| **Read-only was purely nominal** | a phone that had once opened the owner link (30-day cookie) ignored the read-only link entirely: "already signed in, let it through" meant the server kept authorising writes as owner (user-reported) | a link token now **beats an existing session** (a valid token always re-issues the cookie); added `/__guard/whoami` and a "read-only device" badge so "which link am I on" is visible in the UI, with a DOM regression test |
-| Built-in QR encoder | ① format-info cells weren't marked as function modules before data placement → the codeword stream had holes and **scanners could not decode it at all**; ② mask 2 tested the row instead of the column; ③ the N4 penalty formula differed from the standard, so auto mask selection chose the wrong mask | all three fixed, then verified module-by-module against a reference implementation: 1332 combinations (text × version × ECC × mask) all identical, plus end-to-end decoding with jsqr |
+| Read-only was purely nominal | a phone that had once opened the owner link (30-day cookie) ignored the read-only link entirely: "already signed in, let it through" meant the server kept authorising writes as owner (user-reported) | a link token now beats an existing session (a valid token always re-issues the cookie); added `/__guard/whoami` and a "read-only device" badge so "which link am I on" is visible in the UI, with a DOM regression test |
+| Built-in QR encoder | ① format-info cells weren't marked as function modules before data placement → the codeword stream had holes and scanners could not decode it at all; ② mask 2 tested the row instead of the column; ③ the N4 penalty formula differed from the standard, so auto mask selection chose the wrong mask | all three fixed, then verified module-by-module against a reference implementation: 1332 combinations (text × version × ECC × mask) all identical, plus end-to-end decoding with jsqr |
 
 What the suites cover:
 
