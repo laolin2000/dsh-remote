@@ -4,7 +4,7 @@
 
 Device-authenticated remote access for the [DeepSeek Harness](https://github.com/deepseek-ai) (DSH) web UI.
 Tap one link on your phone and you're inside DSH — but **devices you never paired cannot get in**, and
-read-only devices **cannot send a single command**.
+read-only devices **can look, but not touch**.
 
 > Status: guard, long-lived links, role enforcement, tunnel supervision, QR entry and the in-DSH panel are all
 > implemented and exercised. The suites total **392 assertions** — guard 133 / QR 46 / panel (real DOM) 73 /
