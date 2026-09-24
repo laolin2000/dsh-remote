@@ -1213,6 +1213,16 @@ async function cliStatus() {
 }
 
 // ---------------------------------------------------------------- 主流程
+// 未知子命令必须明确报错。以前这里是"不匹配就往下走"，于是 `guard.mjs links` 这种打字错误
+// 会**静默走进 serve 模式**：看起来什么也没发生，其实起了个前台守卫（端口占用时还会被
+// uncaughtException 吞掉，进程一直挂着 —— 实测就是两个 `links` 进程活了十几分钟）。
+const CLI_COMMANDS = ["serve", "pair", "link", "qr", "print", "devices", "revoke", "status", "doctor", "diag", "tunnel"];
+if (!CLI_COMMANDS.includes(cmd)) {
+	console.log(`未知子命令：${cmd}`);
+	console.log(`可用：${CLI_COMMANDS.join(" / ")}（不带子命令 = serve，前台启动守卫）`);
+	if (cmd === "links") console.log("想看当前链接：node guard.mjs link（或 pair）");
+	process.exit(1);
+}
 if (cmd === "pair" || cmd === "link") { (argv.includes("--code") ? cliCode : cliPair)(); process.exit(0); }
 if (cmd === "qr") { cliQr(); process.exit(0); }
 if (cmd === "devices") { cliDevices(); process.exit(0); }

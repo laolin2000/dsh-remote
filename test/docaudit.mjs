@@ -84,22 +84,50 @@ console.log("\n=== 2. 脚本、版本与插件契约 ===");
 
 console.log("\n=== 3. 不泄漏运行态凭据与本机私有信息 ===");
 {
-	const leaks = {
-		"真隧道域名": /experience-wars-brain-forever/i,
-		"真实 owner token": /l3ASARcw9D/,
-		"真实只读 token": /yQruStuaAp/,
+	// 一条通用规则：仓库里不该出现**真实**的用户目录 / 工具目录 / 代理端口。
+	// 占位符（<你> / %USERPROFILE% / $HOME / you / xxx 之类）是文档正常用法，不算泄漏。
+	const PLACEHOLDER = /^(<[^>]*>|%[^%]*%|\$\{?[^}]*\}?|~|you|yourname|username|user|name|xxx+|\u4f60|\u4f60\u7684?)$/i;
+	const generic = {
 		"GitHub PAT": /ghp_[A-Za-z0-9]{20,}/,
-		"本机用户名路径": /C:[\\/]Users[\\/]reskipeer/i,
-		"本机工具目录": /D:[\\/]toolresources/i,
-		"本机代理端口": /127\.0\.0\.1:7897/,
+		"写死的本机代理": /http\.proxy=https?:\/\/127\.0\.0\.1:\d+/i,
+		"本机工具目录": /[A-Za-z]:[\\/]toolresources/i,
 	};
 	const hits = [];
-	for (const f of tracked) {
-		fs.readFileSync(f, "utf8").split(/\r?\n/).forEach((line, i) => {
-			for (const [label, re] of Object.entries(leaks)) if (re.test(line)) hits.push(`${label} @ ${f}:${i + 1}`);
+	const files = tracked.map((f) => ({ f, lines: fs.readFileSync(f, "utf8").split(/\r?\n/) }));
+	for (const { f, lines } of files) {
+		lines.forEach((line, i) => {
+			for (const [label, re] of Object.entries(generic)) if (re.test(line)) hits.push(`${label} @ ${f}:${i + 1}`);
+			for (const m of line.matchAll(/[A-Za-z]:[\\/]Users[\\/]([^\\/\s"'`]+)/g)) {
+				if (!PLACEHOLDER.test(m[1])) hits.push(`真实用户目录（${m[1]}）@ ${f}:${i + 1}`);
+			}
 		});
 	}
-	check("仓库里没有真实域名 / token / PAT / 本机私有路径", hits.length === 0, hits.join(" | "));
+	check("仓库里没有真实用户目录 / PAT / 写死的代理端口", hits.length === 0, hits.join(" | "));
+
+	// 第二条规则：**这台机器上真实在用的**域名与 token 不能出现在仓库里。
+	// 值从运行态读（不是写死在脚本里，否则脚本自己就成了泄漏源）。
+	const stateDir = process.env.DSH_REMOTE_DIR || path.join(process.env.DSH_HOME || path.join(process.env.USERPROFILE || process.env.HOME || "", ".dsh"), "remote");
+	const live = [];
+	try {
+		const conf = JSON.parse(fs.readFileSync(path.join(stateDir, "guard.json"), "utf8"));
+		for (const [name, l] of Object.entries(conf.links || {})) if (l?.token) live.push(`真实${name} token`, String(l.token).slice(0, 12));
+	} catch { /* 没有运行态就跳过这条 */ }
+	try {
+		const url = fs.readFileSync(path.join(stateDir, "public-url.txt"), "utf8").trim();
+		const host = new URL(url).hostname;
+		if (host && !/^(127\.0\.0\.1|localhost)$/.test(host)) live.push("真实隧道域名", host);
+	} catch { /* 同上 */ }
+	if (live.length) {
+		const leak = [];
+		for (const { f, lines } of files) {
+			lines.forEach((line, i) => {
+				for (let k = 0; k < live.length; k += 2) if (line.includes(live[k + 1])) leak.push(`${live[k]} @ ${f}:${i + 1}`);
+			});
+		}
+		check(`仓库里没有本机真实在用的域名/token（核对 ${live.length / 2} 个值）`, leak.length === 0, leak.join(" | "));
+	} else {
+		check("运行态不存在，跳过「真实值」比对（通用规则已检查）", true);
+	}
 }
 
 console.log("\n=== 4. 代码 ⇄ 文档 的交叉引用 ===");

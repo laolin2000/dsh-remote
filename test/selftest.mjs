@@ -492,6 +492,18 @@ console.log("\n=== 17. 重复启动与参数缺值（都会静默坑人）===");
 	const warn = await runCli(["print", "--port"]);
 	check("参数缺值时明确告警（不再静默忽略）", /缺少值/.test(warn), warn.slice(0, 160));
 	check("告警只针对缺值参数，不阻止其它命令运行", /\{/.test(warn), warn.slice(0, 80));
+
+	// 未知子命令：以前会"不匹配就往下走"→ 静默进入 serve 模式（实测留下两个挂着的 links 进程）
+	const unknown = await new Promise((resolve) => {
+		const p = spawn(process.execPath, [GUARD, "links"], { env, stdio: ["ignore", "pipe", "pipe"] });
+		let out = "";
+		p.stdout.on("data", (c) => { out += String(c); });
+		p.stderr.on("data", (c) => { out += String(c); });
+		const timer = setTimeout(() => { try { p.kill(); } catch {} resolve({ code: "timeout", out }); }, 6000);
+		p.on("close", (code) => { clearTimeout(timer); resolve({ code, out }); });
+	});
+	check("未知子命令 → 非零退出，不会静默起服务", unknown.code === 1, `退出码 ${unknown.code}`);
+	check("未知子命令列出可用命令并给出正确写法", /未知子命令/.test(unknown.out) && /serve/.test(unknown.out) && /guard\.mjs link/.test(unknown.out), unknown.out.slice(0, 200));
 }
 
 guard.kill();
