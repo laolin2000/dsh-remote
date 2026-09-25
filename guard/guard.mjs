@@ -61,7 +61,7 @@ const DEFAULT_CONF = {
 	upstream: "http://127.0.0.1:3081",
 	cookieName: "dsh_remote_sid",
 	sessionDays: 30,
-	pairTtlSeconds: 3600,
+	pairTtlSeconds: 300,             // 一次性配对码的有效期（文档一直写的就是 5 分钟；这里曾错写成 3600）
 	pairMaxAttempts: 5,
 	linkUses: 1,                     // 链接里的 token 默认只能用一次；0 = 到期前可重复用（适合分发给多台只读设备）
 	cloudflared: "",                 // 留空则自动探测
@@ -160,6 +160,7 @@ function applyCliOverrides() {
 		["url-file", (v) => path.resolve(v), "urlFile"],
 		["tunnel-log", (v) => path.resolve(v), "tunnelLog"],
 		["cookie-name", (v) => v, "cookieName"],
+		["pair-ttl", (v) => Number(v), "pairTtlSeconds"],
 		["inject-panel", (v) => !(v === "0" || v === "false" || v === "no"), "injectPanel"],
 		["supervise", (v) => !(v === "0" || v === "false" || v === "no"), "superviseTunnel"]
 	];

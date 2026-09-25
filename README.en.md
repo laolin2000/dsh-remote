@@ -249,7 +249,7 @@ plugin/              DSH UI plugin (desktop "phone link" panel + control-plane r
 bin/setup.mjs        one-command install: plugin + find cloudflared + start guard and tunnel + print the link and QR
 bin/install-plugin.mjs  plugin install/uninstall only (copy, append the mount block, update the plugin list, backup first)
 bin/phone-link.mjs   desktop helper for fetching the link (.cmd popup entry / .vbs silent entry)
-test/                tests: selftest(141) qr(46) panel.dom(73) plugin(55) bin(15) install(28) setup(31) docaudit(22) tunnel(11)
+test/                tests: selftest(142) qr(46) panel.dom(73) plugin(55) bin(15) install(28) setup(31) docaudit(22) tunnel(11)
 docs/deploy/         keep-alive templates for Windows / macOS / Linux
 ```
 
@@ -340,12 +340,13 @@ Testing turned up these **real** defects — all fixed:
 | A second guard on the same port | after `EADDRINUSE` the error was swallowed by `uncaughtException` and the **process stayed alive**: it looked like it was running while serving nothing, and 10 s later it would touch the tunnel in the same state directory (reproduced — the stray process lived for minutes) | `server.on("error")` logs a clear cause and **exits non-zero**, pointing at "one guard per state directory" and how to change port/state dir; regression test added |
 | `pair --code --name X` | the name only landed in the pairing record and was never used for the device: with an empty form name the device was called "设备-3", silently dropping the operator's intent (measured against the live guard) | name priority is now "pairing record > phone form > auto-number", with tests covering both paths |
 | `--port` with no value | when the value was eaten by the next flag it silently fell back to the default (measured: thought the port had changed, it was still 8443) — invisible while debugging | missing values now warn loudly (printed by the CLI, written to the log in serve mode) |
+| Pairing-code lifetime was wrong | four places in the docs said "5 minutes" while the code defaulted to **3600 seconds** (12×): a credential meant to be short-lived actually lived for an hour — a security-relevant value, exactly the kind nobody re-checks | default is now 300 s, `--ttl` stays explicit and `--pair-ttl` persists it; an assertion pins the documented value |
 | Unknown CLI subcommand | a typo like `guard.mjs links` matched no branch and fell through, **silently entering serve mode**: nothing seemed to happen, but a foreground guard had started (and with the port taken, the exception handler swallowed it and the process hung — measured: two live `links` processes) | unknown subcommands now fail loudly, list the valid ones and exit non-zero; regression test added |
 | The docs themselves drifted | ① the clone command carried a **machine-local proxy port**, so anyone copying it would fail; ② the plugin `package.json` still advertised "one-time token links" (they have been long-lived for a while); ③ plugin version 0.1.0 vs the 0.3.0 package; ④ the layout section still said 125/68/51 tests; ⑤ the guard's own 12 endpoints and the `diag` alias were documented nowhere | all corrected, and these checks are now a re-runnable `node test/docaudit.mjs` (internal links/paths/scripts/versions/leak scan + route/CLI ↔ docs cross-reference) |
 
 What the suites cover:
 
-- **guard** — `test/selftest.mjs` (141): fail-closed, pairing codes, long-lived link semantics, **link token beats an
+- **guard** — `test/selftest.mjs` (142): fail-closed, pairing codes, long-lived link semantics, **link token beats an
   existing session**, read-only boundaries, owner control plane, `whoami` identity, WS allow-list, Origin/CSRF,
   loopback-trusted vs tunnel-untrusted, page injection + appearance keeper, QR endpoint, reset endpoint, tunnel
   intent, audit.

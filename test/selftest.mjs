@@ -138,6 +138,13 @@ console.log("\n=== 2. 一次性配对码（临时给一台设备用）===");
 	const ownerCode = await pairingCode("owner");
 	const roCode = await pairingCode("readonly");
 	check("能生成配对码", !!ownerCode && !!roCode, `${ownerCode} / ${roCode}`);
+	// 有效期必须和文档写的一致（文档：5 分钟）。踩过的坑：文档写 5 分钟，代码默认却是 3600 秒 —— 差 12 倍。
+	{
+		const cfg1 = JSON.parse(fs.readFileSync(path.join(TMP, "guard.json"), "utf8"));
+		const p = (cfg1.pairings || [])[0];
+		const mins = p ? Math.round((p.expiresAt - Date.now()) / 60000) : -1;
+		check("配对码默认有效期 = 文档写的 5 分钟", mins >= 4 && mins <= 6, `实际 ${mins} 分钟`);
+	}
 	check("错误配对码 → 403", (await call("/__guard/pair", { method: "POST", body: { code: "AAAA-BBBB-CCCC" } })).status === 403);
 	const r = await call("/__guard/pair", { method: "POST", body: { code: ownerCode, name: "手机" } });
 	const j = JSON.parse(r.text);
