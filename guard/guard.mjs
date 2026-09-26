@@ -63,7 +63,6 @@ const DEFAULT_CONF = {
 	sessionDays: 30,
 	pairTtlSeconds: 300,             // 一次性配对码的有效期（文档一直写的就是 5 分钟；这里曾错写成 3600）
 	pairMaxAttempts: 5,
-	linkUses: 1,                     // 链接里的 token 默认只能用一次；0 = 到期前可重复用（适合分发给多台只读设备）
 	cloudflared: "",                 // 留空则自动探测
 	urlFile: path.join(CONF_DIR, "public-url.txt"),
 	tunnelLog: path.join(CONF_DIR, "cloudflared.log"),
